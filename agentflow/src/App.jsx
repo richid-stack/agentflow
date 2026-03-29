@@ -186,6 +186,17 @@ export default function AgentFlow() {
   const [showPersonaEditor, setShowPersonaEditor] = useState(null);
   const [personas, setPersonas] = useState({});
   const [schedulers, setSchedulers] = useState({});
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [transcript, setTranscript] = useState("");
+  const [voiceMode, setVoiceMode] = useState(false); // full voice mode overlay
+  const [audioLevel, setAudioLevel] = useState(0);
+  const recognitionRef = useRef(null);
+  const synthRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const animFrameRef = useRef(null);
   const chatRef = useRef(null);
   const plan = PLANS.find(p => p.id === planId);
   const isAdmin = user?.id === ADMIN_UID;
@@ -545,6 +556,7 @@ Instructions:
         reply = data?.error?.message || "I ran into an issue fetching a response. Please try again.";
       }
       setChatLog(prev => [...prev, { from: "aria", text: reply, id: id + 1, fresh: true }]);
+      ariaSpeak(reply);
     } catch (e) {
       setChatLog(prev => [...prev, { from: "aria", text: `Connection error: ${e.message}. Check your network and try again.`, id: id + 1, fresh: true }]);
     }
@@ -630,6 +642,142 @@ Instructions:
     } catch (e) {
       notify(`Connection error: ${e.message}`);
     }
+  };
+
+  // ── Voice: start listening ──
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { notify("Voice not supported in this browser. Use Chrome or Edge."); return; }
+    if (isListening) { stopListening(); return; }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognitionRef.current = recognition;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setTranscript("");
+      startAudioVisualizer();
+    };
+
+    recognition.onresult = (e) => {
+      let interim = "";
+      let final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      setTranscript(final || interim);
+      if (final) {
+        setChatInput(final);
+        stopListening();
+        setTimeout(() => {
+          sendChatWithText(final);
+        }, 300);
+      }
+    };
+
+    recognition.onerror = (e) => {
+      console.error("Speech error:", e.error);
+      stopListening();
+      if (e.error !== "no-speech") notify("Mic error: " + e.error);
+    };
+
+    recognition.onend = () => { stopListening(); };
+    recognition.start();
+  };
+
+  const stopListening = () => {
+    setIsListening(false);
+    setTranscript("");
+    stopAudioVisualizer();
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch(e) {}
+      recognitionRef.current = null;
+    }
+  };
+
+  // ── Audio visualizer for mic level ──
+  const startAudioVisualizer = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      audioContextRef.current = ctx;
+      analyserRef.current = analyser;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+        setAudioLevel(Math.min(avg / 50, 1));
+        animFrameRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch(e) { console.log("Visualizer error:", e); }
+  };
+
+  const stopAudioVisualizer = () => {
+    setAudioLevel(0);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (audioContextRef.current) { try { audioContextRef.current.close(); } catch(e) {} audioContextRef.current = null; }
+  };
+
+  // ── Aria speaks back ──
+  const ariaSpeak = (text) => {
+    if (!voiceEnabled) return;
+    window.speechSynthesis.cancel();
+    const clean = text.replace(/[🇬🇭🔥✅❌⚠️🎯📅🧾💬👋😊]/g, "").replace(/
++/g, ". ").trim();
+    if (!clean) return;
+    const utt = new SpeechSynthesisUtterance(clean);
+    utt.rate = 1.05;
+    utt.pitch = 1.1;
+    utt.volume = 1;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"))
+      || voices.find(v => v.lang.startsWith("en-") && !v.name.includes("Male"))
+      || voices[0];
+    if (preferred) utt.voice = preferred;
+    utt.onstart = () => setIsSpeaking(true);
+    utt.onend = () => setIsSpeaking(false);
+    utt.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utt);
+  };
+
+  // ── sendChat with text param (for voice) ──
+  const sendChatWithText = async (text) => {
+    if (!text.trim() || loading) return;
+    const msg = text.trim();
+    const id = msgId;
+    setMsgId(c => c + 2);
+    setChatInput("");
+    setChatLog(prev => [...prev.map(m => ({ ...m, fresh: false })), { from: "user", text: msg, id }]);
+    setLoading(true);
+    const systemPrompt = `You are Aria, the intelligent AI operations manager for AgentFlow — a business automation platform built in Ghana 🇬🇭.
+Current platform state:
+- Agents: ${agents.map(a => `${a.name} (${a.role}, ${a.status}, ${a.tasks} tasks, ${a.successRate}% success)`).join("; ")}
+- Active agents: ${agents.filter(a=>a.status==="active").length}/${agents.length}
+- Total tasks: ${agents.reduce((s,a)=>s+a.tasks,0)}
+- Connected integrations: ${integrations.filter(i=>i.connected).map(i=>i.name).join(", ")}
+- Plan: ${plan.name}
+Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragraphs.`;
+    try {
+      const history = chatLog.filter(m => m.from === "user" || m.from === "aria").map(m => ({ role: m.from === "user" ? "user" : "model", parts: [{ text: m.text }] }));
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_KEY}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemPrompt }] }, contents: [...history, { role: "user", parts: [{ text: msg }] }], generationConfig: { maxOutputTokens: 600, temperature: 0.65, topP: 0.92 } }) });
+      const data = await res.json();
+      const allParts = data?.candidates?.[0]?.content?.parts ?? [];
+      const reply = allParts.map(p => p.text ?? "").join("").trim() || data?.error?.message || "I ran into an issue. Please try again.";
+      setChatLog(prev => [...prev, { from: "aria", text: reply, id: id + 1, fresh: true }]);
+      ariaSpeak(reply);
+    } catch (e) {
+      setChatLog(prev => [...prev, { from: "aria", text: `Connection error: ${e.message}`, id: id + 1, fresh: true }]);
+    }
+    setLoading(false);
   };
 
   const SidebarContent = () => (
@@ -738,6 +886,16 @@ Instructions:
         @keyframes glow{0%,100%{box-shadow:0 0 18px rgba(0,255,178,.15)}50%{box-shadow:0 0 30px rgba(0,255,178,.28)}}
         @keyframes toast{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
         @keyframes dotBounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
+        @keyframes voicePulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.12);opacity:.85}}
+        @keyframes voiceRing1{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.8);opacity:0}}
+        @keyframes voiceRing2{0%{transform:scale(1);opacity:.4}100%{transform:scale(2.2);opacity:0}}
+        @keyframes voiceRing3{0%{transform:scale(1);opacity:.25}100%{transform:scale(2.6);opacity:0}}
+        @keyframes waveBar{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1)}}
+        @keyframes speakPulse{0%,100%{box-shadow:0 0 0 0 rgba(0,255,178,.4)}50%{box-shadow:0 0 0 12px rgba(0,255,178,0)}}
+        @keyframes voiceOverlayIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+        .voice-btn{transition:all .2s cubic-bezier(.16,1,.3,1)}
+        .voice-btn:hover{transform:scale(1.05)}
+        .voice-btn:active{transform:scale(.96)}
         .desktop-sidebar{display:flex}
         .mobile-header{display:none}
         .mobile-bottom-nav{display:none}
@@ -1155,8 +1313,10 @@ Instructions:
                     <div style={{ flex: 1 }}>
                       <div style={{ color: "#fff", fontWeight: "700", fontFamily: "'Syne',sans-serif", fontSize: "13px" }}>Aria</div>
                       <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                        <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: "#00FFB2", boxShadow: "0 0 5px #00FFB2", animation: "pulse 2s infinite" }} />
-                        <span style={{ color: "#00FFB2", fontSize: "9px", letterSpacing: ".13em" }}>ONLINE · FULL CONTEXT</span>
+                        <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: isSpeaking ? "#FFD600" : "#00FFB2", boxShadow: isSpeaking ? "0 0 5px #FFD600" : "0 0 5px #00FFB2", animation: "pulse 2s infinite" }} />
+                        <span style={{ color: isSpeaking ? "#FFD600" : "#00FFB2", fontSize: "9px", letterSpacing: ".13em" }}>
+                          {isSpeaking ? "SPEAKING..." : isListening ? "LISTENING..." : "ONLINE · FULL CONTEXT"}
+                        </span>
                       </div>
                     </div>
                     <div style={{ fontSize: "10px", color: "#666" }}>{chatLog.length} messages</div>
@@ -1193,20 +1353,80 @@ Instructions:
                     ))}
                   </div>
 
-                  {/* Input bar */}
-                  <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,.05)", display: "flex", gap: "8px", flexShrink: 0 }}>
-                    <input
-                      value={chatInput}
-                      onChange={e => setChatInput(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()}
-                      placeholder="Ask Aria anything about your operations..."
-                      style={{ flex: 1, padding: "11px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "10px", color: "#fff", fontSize: "13px", fontFamily: "inherit", minWidth: 0, transition: "all .15s" }}
-                    />
-                    <button
-                      onClick={sendChat}
-                      disabled={loading}
-                      style={{ padding: "11px 20px", background: loading ? "rgba(0,255,178,.15)" : "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "10px", color: "#04050A", fontWeight: "700", cursor: loading ? "not-allowed" : "pointer", fontSize: "13px", fontFamily: "inherit", boxShadow: loading ? "none" : "0 4px 14px rgba(0,255,178,.25)", transition: "all .2s", whiteSpace: "nowrap", flexShrink: 0 }}
-                    >{loading ? "···" : "Send →"}</button>
+                  {/* Input bar with voice */}
+                  <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,.05)", flexShrink: 0 }}>
+                    {/* Live transcript preview */}
+                    {isListening && transcript && (
+                      <div style={{ padding: "8px 12px", marginBottom: "8px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.18)", borderRadius: "8px", fontSize: "12px", color: "#BDFFD9", fontStyle: "italic" }}>
+                        🎤 {transcript}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      {/* Mic button */}
+                      <div style={{ position: "relative", flexShrink: 0 }}>
+                        {isListening && <>
+                          <div style={{ position: "absolute", inset: "-8px", borderRadius: "50%", border: "1.5px solid rgba(0,255,178,.5)", animation: "voiceRing1 1.4s ease-out infinite" }} />
+                          <div style={{ position: "absolute", inset: "-8px", borderRadius: "50%", border: "1.5px solid rgba(0,255,178,.35)", animation: "voiceRing2 1.4s ease-out .2s infinite" }} />
+                          <div style={{ position: "absolute", inset: "-8px", borderRadius: "50%", border: "1.5px solid rgba(0,255,178,.2)", animation: "voiceRing3 1.4s ease-out .4s infinite" }} />
+                        </>}
+                        <button
+                          onClick={startListening}
+                          className="voice-btn"
+                          style={{
+                            width: "44px", height: "44px", borderRadius: "50%", border: "none", cursor: "pointer",
+                            background: isListening
+                              ? `radial-gradient(circle, rgba(0,255,178,${0.15 + audioLevel * 0.5}) 0%, rgba(0,255,178,.08) 100%)`
+                              : "rgba(255,255,255,.05)",
+                            boxShadow: isListening ? `0 0 ${12 + audioLevel * 24}px rgba(0,255,178,${0.3 + audioLevel * 0.5})` : "none",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            transition: "background .1s, box-shadow .1s",
+                            animation: isListening ? "voicePulse 1.2s ease infinite" : "none",
+                          }}
+                          title={isListening ? "Stop listening" : "Speak to Aria"}
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                            {isListening ? (
+                              // Waveform bars when listening
+                              <>
+                                <rect x="3" y="9" width="3" height="6" rx="1.5" fill="#00FFB2" style={{animation:"waveBar 0.6s ease 0s infinite"}} />
+                                <rect x="7.5" y="6" width="3" height="12" rx="1.5" fill="#00FFB2" style={{animation:"waveBar 0.6s ease 0.1s infinite"}} />
+                                <rect x="12" y="4" width="3" height="16" rx="1.5" fill="#00FFB2" style={{animation:"waveBar 0.6s ease 0.2s infinite"}} />
+                                <rect x="16.5" y="6" width="3" height="12" rx="1.5" fill="#00FFB2" style={{animation:"waveBar 0.6s ease 0.3s infinite"}} />
+                              </>
+                            ) : (
+                              // Microphone icon when idle
+                              <>
+                                <rect x="9" y="3" width="6" height="11" rx="3" fill={isSpeaking ? "#00FFB2" : "#888"} />
+                                <path d="M5 11a7 7 0 0 0 14 0" stroke={isSpeaking ? "#00FFB2" : "#888"} strokeWidth="1.5" strokeLinecap="round" fill="none"/>
+                                <line x1="12" y1="18" x2="12" y2="21" stroke={isSpeaking ? "#00FFB2" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+                                <line x1="9" y1="21" x2="15" y2="21" stroke={isSpeaking ? "#00FFB2" : "#888"} strokeWidth="1.5" strokeLinecap="round"/>
+                              </>
+                            )}
+                          </svg>
+                        </button>
+                      </div>
+
+                      <input
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()}
+                        placeholder={isListening ? "Listening..." : "Ask Aria anything..."}
+                        style={{ flex: 1, padding: "11px 14px", background: isListening ? "rgba(0,255,178,.04)" : "rgba(255,255,255,.04)", border: `1px solid ${isListening ? "rgba(0,255,178,.25)" : "rgba(255,255,255,.08)"}`, borderRadius: "10px", color: "#fff", fontSize: "13px", fontFamily: "inherit", minWidth: 0, transition: "all .2s" }}
+                      />
+
+                      {/* Voice toggle */}
+                      <button
+                        onClick={() => { setVoiceEnabled(v => !v); window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+                        title={voiceEnabled ? "Mute Aria" : "Unmute Aria"}
+                        style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", cursor: "pointer", background: voiceEnabled ? "rgba(0,255,178,.08)" : "rgba(255,255,255,.04)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", transition: "all .2s" }}
+                      >{voiceEnabled ? "🔊" : "🔇"}</button>
+
+                      <button
+                        onClick={sendChat}
+                        disabled={loading}
+                        style={{ padding: "11px 18px", background: loading ? "rgba(0,255,178,.15)" : "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "10px", color: "#04050A", fontWeight: "700", cursor: loading ? "not-allowed" : "pointer", fontSize: "13px", fontFamily: "inherit", boxShadow: loading ? "none" : "0 4px 14px rgba(0,255,178,.25)", transition: "all .2s", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >{loading ? "···" : "→"}</button>
+                    </div>
                   </div>
                 </Glass>
               </div>
