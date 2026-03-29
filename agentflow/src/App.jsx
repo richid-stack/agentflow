@@ -214,8 +214,24 @@ export default function AgentFlow() {
       status: a.status || "idle",
       tasks: a.tasks_completed || 0,
       successRate: a.success_rate || 100,
-      triggers: ["Manual trigger"],
-      actions: ["Execute task"],
+      triggers: (() => {
+        const t = {
+          "Customer Support": ["WhatsApp message received", "New email enquiry", "Contact form submitted"],
+          "Appointment Booking": ["Booking request via WhatsApp", "Calendar slot opens up", "Daily 8am check"],
+          "Invoicing & Payments": ["Job marked complete", "Payment 3 days overdue", "End of month"],
+          "Lead Capture": ["Website form submitted", "WhatsApp enquiry received", "Email from new contact"],
+        };
+        return t[a.role] || ["Manual trigger"];
+      })(),
+      actions: (() => {
+        const ac = {
+          "Customer Support": ["Send instant reply", "Create support ticket", "Escalate to human agent"],
+          "Appointment Booking": ["Confirm appointment", "Send SMS reminder 24h before", "Reschedule on conflict"],
+          "Invoicing & Payments": ["Generate and send invoice", "Send payment reminder via WhatsApp", "Flag unresolved debts"],
+          "Lead Capture": ["Score lead by intent", "Add to pipeline", "Notify sales team on WhatsApp"],
+        };
+        return ac[a.role] || ["Execute task"];
+      })(),
       logs: (a.agent_logs || [])
         .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))
         .slice(0, 5)
@@ -330,7 +346,7 @@ Instructions:
           body: JSON.stringify({
             system_instruction: { parts: [{ text: systemPrompt }] },
             contents: [...history, { role: "user", parts: [{ text: msg }] }],
-            generationConfig: { maxOutputTokens: 800, temperature: 0.65, topP: 0.92 },
+            generationConfig: { maxOutputTokens: 600, temperature: 0.65, topP: 0.92 },
           }),
         }
       );
@@ -399,6 +415,42 @@ Instructions:
     setNewAgent({ name: "", role: "", icon: "🤖" });
     setShowBuilder(false);
     notify(`${newAgent.name} deployed! 🚀`);
+  };
+
+  // ── Trigger agent action → sends real WhatsApp notification ──
+  const triggerAgent = async (agent, triggerType, data = {}) => {
+    const notifyNumber = import.meta.env.VITE_TEST_WHATSAPP_NUMBER;
+    if (!notifyNumber) { notify("Set VITE_TEST_WHATSAPP_NUMBER in .env to receive alerts"); return; }
+    notify(`${agent.name} triggered — sending WhatsApp alert...`);
+    try {
+      const res = await fetch("/api/agent-trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentName: agent.name, triggerType, data, notifyNumber }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        notify(`✅ ${agent.name} sent WhatsApp alert!`);
+        // Log the action to Supabase
+        if (user) {
+          await supabase.from("agent_logs").insert({
+            agent_id: agent.id,
+            user_id: user.id,
+            message: `Triggered: ${triggerType.replace(/_/g, " ")}`,
+            success: true,
+          });
+          // Increment tasks_completed
+          await supabase.from("agents")
+            .update({ tasks_completed: agent.tasks + 1 })
+            .eq("id", agent.id);
+          await loadAgents();
+        }
+      } else {
+        notify(`${agent.name} error: ${result.error}`);
+      }
+    } catch (e) {
+      notify(`Connection error: ${e.message}`);
+    }
   };
 
   const SidebarContent = () => (
@@ -752,6 +804,28 @@ Instructions:
                                 ))}
                               </div>
                             ))}
+                            {/* ── Real trigger buttons ── */}
+                            <div>
+                              <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "8px" }}>FIRE TRIGGER</div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                                {a.role === "Customer Support" && <>
+                                  <button onClick={() => triggerAgent(a, "Aria:ticket_resolved", { customerName: "Test Customer", issue: "General enquiry", resolution: "Handled via WhatsApp" })} style={{ padding: "6px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "7px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>✅ Resolve ticket</button>
+                                  <button onClick={() => triggerAgent(a, "Aria:escalation", { customerName: "Test Customer", issue: "Complex billing dispute", ticketId: "#TEST-001" })} style={{ padding: "6px 10px", background: "rgba(255,107,107,.06)", border: "1px solid rgba(255,107,107,.15)", borderRadius: "7px", color: "#FF6B6B", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>🚨 Escalate issue</button>
+                                </>}
+                                {a.role === "Appointment Booking" && <>
+                                  <button onClick={() => triggerAgent(a, "Rex:appointment_booked", { clientName: "Test Client", date: "Tomorrow", time: "10:00 AM", service: "Consultation" })} style={{ padding: "6px 10px", background: "rgba(255,214,0,.06)", border: "1px solid rgba(255,214,0,.15)", borderRadius: "7px", color: "#FFD600", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>📅 Book appointment</button>
+                                  <button onClick={() => triggerAgent(a, "Rex:appointment_reminder", { clientName: "Test Client", time: "10:00 AM", service: "Consultation" })} style={{ padding: "6px 10px", background: "rgba(255,214,0,.06)", border: "1px solid rgba(255,214,0,.15)", borderRadius: "7px", color: "#FFD600", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>⏰ Send reminder</button>
+                                </>}
+                                {a.role === "Invoicing & Payments" && <>
+                                  <button onClick={() => triggerAgent(a, "Finn:invoice_sent", { clientName: "Test Client", amount: "GHS 2,500", invoiceNumber: "INV-TEST", dueDate: "30 days" })} style={{ padding: "6px 10px", background: "rgba(255,107,107,.06)", border: "1px solid rgba(255,107,107,.15)", borderRadius: "7px", color: "#FF6B6B", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>🧾 Send invoice</button>
+                                  <button onClick={() => triggerAgent(a, "Finn:payment_overdue", { clientName: "Test Client", amount: "GHS 2,500", daysOverdue: "5" })} style={{ padding: "6px 10px", background: "rgba(255,107,107,.06)", border: "1px solid rgba(255,107,107,.15)", borderRadius: "7px", color: "#FF6B6B", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>⚠️ Chase payment</button>
+                                </>}
+                                {a.role === "Lead Capture" && <>
+                                  <button onClick={() => triggerAgent(a, "Nova:lead_captured", { leadName: "Test Lead", source: "Website", score: 85, contact: "+233500000000" })} style={{ padding: "6px 10px", background: "rgba(167,139,250,.06)", border: "1px solid rgba(167,139,250,.15)", borderRadius: "7px", color: "#A78BFA", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>🎯 Capture lead</button>
+                                  <button onClick={() => triggerAgent(a, "Nova:lead_qualified", { leadName: "Test Lead", score: 91, business: "Test Business" })} style={{ padding: "6px 10px", background: "rgba(167,139,250,.06)", border: "1px solid rgba(167,139,250,.15)", borderRadius: "7px", color: "#A78BFA", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", textAlign: "left" }}>✅ Qualify lead</button>
+                                </>}
+                              </div>
+                            </div>
                             <div>
                               <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "8px" }}>ACTIVITY LOG</div>
                               {a.logs.map((l, i) => (
