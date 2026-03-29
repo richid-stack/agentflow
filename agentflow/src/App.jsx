@@ -176,9 +176,20 @@ export default function AgentFlow() {
   const [gmailConnected, setGmailConnected] = useState(false);
   const [gmailEmails, setGmailEmails] = useState([]);
   const [gmailLoading, setGmailLoading] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [darkMode, setDarkMode] = useState(true);
+  const [activeAgentChat, setActiveAgentChat] = useState(null); // agent being chatted with
+  const [agentChatLog, setAgentChatLog] = useState({});
+  const [agentChatInput, setAgentChatInput] = useState("");
+  const [agentChatLoading, setAgentChatLoading] = useState(false);
+  const [showPersonaEditor, setShowPersonaEditor] = useState(null);
+  const [personas, setPersonas] = useState({});
+  const [schedulers, setSchedulers] = useState({});
   const chatRef = useRef(null);
   const plan = PLANS.find(p => p.id === planId);
   const isAdmin = user?.id === ADMIN_UID;
+  const unreadNotifs = notifications.filter(n => !n.read).length;
 
   useEffect(() => { chatRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatLog]);
 
@@ -364,6 +375,88 @@ export default function AgentFlow() {
     setGmailLoading(false);
   };
 
+  // ── Gmail postMessage listener (popup closes → load emails) ──
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.type === "GMAIL_CONNECTED") {
+        notify("Gmail authorized! Loading emails...");
+        setGmailConnected(true);
+        loadGmailEmails();
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [user]);
+
+  // ── Add notification ──
+  const addNotification = (msg, type = "info", agentName = "") => {
+    const notif = { id: Date.now(), msg, type, agentName, time: new Date(), read: false };
+    setNotifications(prev => [notif, ...prev].slice(0, 50));
+  };
+
+  // ── Override triggerAgent to also add notification ──
+  const addAgentNotification = (agentName, action, ok = true) => {
+    addNotification(`${agentName}: ${action}`, ok ? "success" : "error", agentName);
+  };
+
+  // ── Agent scheduler: set time for agent to auto-trigger ──
+  const setAgentSchedule = (agentId, time) => {
+    setSchedulers(prev => ({ ...prev, [agentId]: time }));
+    notify(`Schedule set for ${time} daily ✓`);
+  };
+
+  // ── Chat with any specific agent ──
+  const sendAgentChat = async (agent, msg) => {
+    if (!msg.trim() || agentChatLoading) return;
+    setAgentChatLoading(true);
+    const agentId = agent.id;
+    setAgentChatLog(prev => ({
+      ...prev,
+      [agentId]: [...(prev[agentId] || []), { from: "user", text: msg }]
+    }));
+    setAgentChatInput("");
+
+    const persona = personas[agentId] || {};
+    const systemPrompt = `You are ${persona.name || agent.name}, an AI agent for AgentFlow — a business automation platform built in Ghana 🇬🇭.
+Your role: ${agent.role}
+Your personality: ${persona.tone || "Professional, helpful, concise"}
+${persona.instructions || ""}
+You handle: ${agent.description}
+Keep replies short and focused. Plain text only, no markdown.`;
+
+    try {
+      const history = (agentChatLog[agentId] || []).map(m => ({
+        role: m.from === "user" ? "user" : "model",
+        parts: [{ text: m.text }],
+      }));
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [...history, { role: "user", parts: [{ text: msg }] }],
+            generationConfig: { maxOutputTokens: 400, temperature: 0.65 },
+          }),
+        }
+      );
+      const data = await res.json();
+      const reply = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("").trim()
+        || "I'm having trouble responding right now.";
+      setAgentChatLog(prev => ({
+        ...prev,
+        [agentId]: [...(prev[agentId] || []), { from: "agent", text: reply }]
+      }));
+    } catch (e) {
+      setAgentChatLog(prev => ({
+        ...prev,
+        [agentId]: [...(prev[agentId] || []), { from: "agent", text: "Connection error. Try again." }]
+      }));
+    }
+    setAgentChatLoading(false);
+  };
+
   // ── Helpers ──
   const timeAgo = (iso) => {
     const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -516,6 +609,7 @@ Instructions:
       const result = await res.json();
       if (result.success) {
         notify(`✅ ${agent.name} sent WhatsApp alert!`);
+        addAgentNotification(agent.name, triggerType.replace(/_/g, " "), true);
         // Log the action to Supabase
         if (user) {
           await supabase.from("agent_logs").insert({
@@ -590,10 +684,15 @@ Instructions:
             <div style={{ color: "#ccc", fontSize: "10px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email?.split("@")[0] || "Your Business"}</div>
             <div style={{ color: "#888", fontSize: "9px" }}>Ghana 🇬🇭</div>
           </div>
-          <button onClick={() => supabase.auth.signOut()} title="Sign out" style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px", transition: "color .15s", flexShrink: 0 }}
-            onMouseEnter={e => e.target.style.color="#FF6B6B"}
-            onMouseLeave={e => e.target.style.color="#555"}
-          >⏻</button>
+              <button onClick={() => setDarkMode(d => !d)} title="Toggle theme" style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px" }}>{darkMode ? "☀️" : "🌙"}</button>
+              <div style={{ position: "relative" }}>
+                <button onClick={() => setShowNotifs(s => !s)} title="Notifications" className={unreadNotifs > 0 ? "bell-animate" : ""} style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px" }}>🔔</button>
+                {unreadNotifs > 0 && <div style={{ position: "absolute", top: "-2px", right: "-2px", width: "14px", height: "14px", borderRadius: "50%", background: "#FF6B6B", fontSize: "8px", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700" }}>{unreadNotifs}</div>}
+              </div>
+              <button onClick={() => supabase.auth.signOut()} title="Sign out" style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px", transition: "color .15s", flexShrink: 0 }}
+                onMouseEnter={e => e.target.style.color="#FF6B6B"}
+                onMouseLeave={e => e.target.style.color="#555"}
+              >⏻</button>
         </div>
       </div>
     </>
@@ -623,7 +722,7 @@ Instructions:
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: "#04050A", color: "#E0E0E0", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden" }}>
+    <div style={{ minHeight: "100vh", background: darkMode ? "#04050A" : "#F0F2F5", color: darkMode ? "#E0E0E0" : "#1A1A2E", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
@@ -642,6 +741,9 @@ Instructions:
         .desktop-sidebar{display:flex}
         .mobile-header{display:none}
         .mobile-bottom-nav{display:none}
+        @keyframes bellShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-15deg)}40%{transform:rotate(15deg)}60%{transform:rotate(-10deg)}80%{transform:rotate(10deg)}}
+        @keyframes notifSlide{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+        .bell-animate{animation:bellShake .5s ease}
         @media(max-width:768px){
           .desktop-sidebar{display:none!important}
           .mobile-header{display:flex!important}
@@ -656,6 +758,102 @@ Instructions:
         <div style={{ position: "absolute", bottom: "-20%", left: "-10%", width: "45vw", height: "45vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(0,200,120,.05) 0%,transparent 70%)" }} />
         <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,255,178,.008) 3px,rgba(0,255,178,.008) 4px)" }} />
       </div>
+
+      {/* ── NOTIFICATIONS PANEL ── */}
+      {showNotifs && (
+        <div style={{ position: "fixed", top: "60px", right: "16px", zIndex: 9998, width: "320px", maxHeight: "420px", background: "rgba(4,6,12,.98)", border: "1px solid rgba(255,255,255,.1)", borderRadius: "16px", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 20px 60px rgba(0,0,0,.6)", overflow: "hidden", animation: "notifSlide .25s ease" }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,.07)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ color: "#fff", fontWeight: "700", fontSize: "12px", fontFamily: "'Syne',sans-serif" }}>Notifications</span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              {unreadNotifs > 0 && <button onClick={() => setNotifications(p => p.map(n => ({ ...n, read: true })))} style={{ background: "none", border: "none", color: "#00FFB2", fontSize: "9px", cursor: "pointer", letterSpacing: ".08em" }}>MARK ALL READ</button>}
+              <button onClick={() => setShowNotifs(false)} style={{ background: "none", border: "none", color: "#666", fontSize: "14px", cursor: "pointer" }}>✕</button>
+            </div>
+          </div>
+          <div style={{ overflowY: "auto", maxHeight: "340px" }}>
+            {notifications.length === 0 ? (
+              <div style={{ padding: "24px", textAlign: "center", color: "#555", fontSize: "12px" }}>No notifications yet</div>
+            ) : notifications.map((n, i) => (
+              <div key={n.id} onClick={() => setNotifications(p => p.map(x => x.id === n.id ? { ...x, read: true } : x))} style={{ padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,.04)", cursor: "pointer", background: n.read ? "transparent" : "rgba(0,255,178,.03)", transition: "background .15s" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
+                  <span style={{ fontSize: "10px", color: n.type === "success" ? "#00FFB2" : n.type === "error" ? "#FF6B6B" : "#FFD600", letterSpacing: ".06em" }}>{n.agentName || "SYSTEM"}</span>
+                  <span style={{ fontSize: "9px", color: "#555" }}>{Math.floor((Date.now() - n.time) / 60000)}m ago</span>
+                </div>
+                <div style={{ fontSize: "11px", color: n.read ? "#666" : "#bbb", lineHeight: "1.4" }}>{n.msg}</div>
+                {!n.read && <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: "#00FFB2", marginTop: "4px" }} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── AGENT CHAT MODAL ── */}
+      {activeAgentChat && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1100, background: "rgba(0,0,0,.85)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }} onClick={() => setActiveAgentChat(null)}>
+          <div style={{ width: "100%", maxWidth: "480px", height: "560px", background: "rgba(4,6,12,.99)", border: `1px solid ${activeAgentChat.color}30`, borderRadius: "20px", display: "flex", flexDirection: "column", overflow: "hidden", animation: "fadeUp .3s ease", boxShadow: "0 20px 60px rgba(0,0,0,.6)" }} onClick={e => e.stopPropagation()}>
+            {/* Agent chat header */}
+            <div style={{ padding: "16px 18px", borderBottom: "1px solid rgba(255,255,255,.06)", display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ width: "38px", height: "38px", minWidth: "38px", borderRadius: "10px", background: `${activeAgentChat.color}15`, border: `1px solid ${activeAgentChat.color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>{activeAgentChat.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ color: "#fff", fontWeight: "700", fontFamily: "'Syne',sans-serif", fontSize: "13px" }}>{activeAgentChat.name}</div>
+                <div style={{ fontSize: "9px", color: activeAgentChat.color, letterSpacing: ".12em" }}>{activeAgentChat.role.toUpperCase()}</div>
+              </div>
+              <button onClick={() => setShowPersonaEditor(activeAgentChat)} style={{ padding: "4px 10px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "6px", color: "#888", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>✏️ Persona</button>
+              <button onClick={() => setActiveAgentChat(null)} style={{ background: "none", border: "none", color: "#555", fontSize: "18px", cursor: "pointer" }}>✕</button>
+            </div>
+            {/* Chat messages */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {(agentChatLog[activeAgentChat.id] || []).length === 0 && (
+                <div style={{ textAlign: "center", color: "#555", fontSize: "12px", marginTop: "20px" }}>
+                  Chat with {activeAgentChat.name} about their tasks, performance, or anything related to their role.
+                </div>
+              )}
+              {(agentChatLog[activeAgentChat.id] || []).map((m, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: m.from === "user" ? "flex-end" : "flex-start" }}>
+                  <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: m.from === "user" ? "14px 4px 14px 14px" : "4px 14px 14px 14px", background: m.from === "user" ? "rgba(255,255,255,.07)" : `${activeAgentChat.color}10`, border: `1px solid ${m.from === "user" ? "rgba(255,255,255,.1)" : activeAgentChat.color + "20"}`, fontSize: "12px", color: m.from === "user" ? "#E0E0E0" : "#fff", lineHeight: "1.6", whiteSpace: "pre-wrap" }}>{m.text}</div>
+                </div>
+              ))}
+              {agentChatLoading && (
+                <div style={{ display: "flex", gap: "5px", padding: "10px 14px", background: `${activeAgentChat.color}08`, border: `1px solid ${activeAgentChat.color}15`, borderRadius: "4px 14px 14px 14px", width: "fit-content" }}>
+                  {[0,1,2].map(i => <div key={i} style={{ width: "5px", height: "5px", borderRadius: "50%", background: activeAgentChat.color, animation: `dotBounce 1.2s ease ${i*.2}s infinite` }} />)}
+                </div>
+              )}
+            </div>
+            {/* Input */}
+            <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,.05)", display: "flex", gap: "8px" }}>
+              <input value={agentChatInput} onChange={e => setAgentChatInput(e.target.value)} onKeyDown={e => e.key === "Enter" && !e.shiftKey && (sendAgentChat(activeAgentChat, agentChatInput), setAgentChatInput(""))} placeholder={`Ask ${activeAgentChat.name} anything...`} style={{ flex: 1, padding: "10px 13px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "9px", color: "#fff", fontSize: "12px", fontFamily: "inherit" }} />
+              <button onClick={() => { sendAgentChat(activeAgentChat, agentChatInput); setAgentChatInput(""); }} style={{ padding: "10px 16px", background: `linear-gradient(135deg,${activeAgentChat.color},${activeAgentChat.color}bb)`, border: "none", borderRadius: "9px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "12px", fontFamily: "inherit" }}>→</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PERSONA EDITOR MODAL ── */}
+      {showPersonaEditor && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1200, background: "rgba(0,0,0,.88)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }} onClick={() => setShowPersonaEditor(null)}>
+          <div style={{ width: "100%", maxWidth: "400px", background: "rgba(4,6,12,.99)", border: "1px solid rgba(255,255,255,.1)", borderRadius: "18px", padding: "24px", animation: "fadeUp .3s ease" }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em", marginBottom: "16px" }}>PERSONA EDITOR — {showPersonaEditor.name.toUpperCase()}</div>
+            {[
+              { label: "CUSTOM NAME", key: "name", placeholder: showPersonaEditor.name },
+              { label: "TONE & PERSONALITY", key: "tone", placeholder: "e.g. Friendly, direct, professional" },
+              { label: "SPECIAL INSTRUCTIONS", key: "instructions", placeholder: "e.g. Always mention our Ghana 🇬🇭 roots, focus on GHS pricing" },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom: "12px" }}>
+                <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "5px" }}>{f.label}</div>
+                <input value={personas[showPersonaEditor.id]?.[f.key] || ""} onChange={e => setPersonas(p => ({ ...p, [showPersonaEditor.id]: { ...(p[showPersonaEditor.id] || {}), [f.key]: e.target.value } }))} placeholder={f.placeholder} style={{ width: "100%", padding: "9px 12px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: "8px", color: "#fff", fontSize: "12px", fontFamily: "inherit" }} />
+              </div>
+            ))}
+            {/* Scheduler */}
+            <div style={{ marginBottom: "16px" }}>
+              <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "5px" }}>DAILY SCHEDULE (24H FORMAT)</div>
+              <input type="time" value={schedulers[showPersonaEditor.id] || ""} onChange={e => setAgentSchedule(showPersonaEditor.id, e.target.value)} style={{ width: "100%", padding: "9px 12px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: "8px", color: "#fff", fontSize: "12px", fontFamily: "inherit" }} />
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => { setShowPersonaEditor(null); notify(`${showPersonaEditor.name} persona saved! ✓`); }} style={{ flex: 1, padding: "10px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "9px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "12px", fontFamily: "inherit" }}>Save Persona</button>
+              <button onClick={() => setShowPersonaEditor(null)} style={{ padding: "10px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "9px", color: "#888", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
@@ -729,7 +927,13 @@ Instructions:
               <div style={{ width: "26px", height: "26px", borderRadius: "7px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Syne',sans-serif", fontWeight: "900", color: "#04050A", fontSize: "13px" }}>A</div>
               <span style={{ color: "#fff", fontWeight: "700", fontSize: "13px", fontFamily: "'Syne',sans-serif" }}>AgentFlow</span>
             </div>
-            <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: "#00FFB2", boxShadow: "0 0 6px #00FFB2", animation: "pulse 2s infinite" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button onClick={() => setDarkMode(d => !d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "2px" }}>{darkMode ? "☀️" : "🌙"}</button>
+              <div style={{ position: "relative" }}>
+                <button onClick={() => setShowNotifs(s => !s)} className={unreadNotifs > 0 ? "bell-animate" : ""} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "2px" }}>🔔</button>
+                {unreadNotifs > 0 && <div style={{ position: "absolute", top: "-2px", right: "-2px", width: "14px", height: "14px", borderRadius: "50%", background: "#FF6B6B", fontSize: "8px", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700" }}>{unreadNotifs}</div>}
+              </div>
+            </div>
           </header>
 
           {/* Main scroll area */}
@@ -865,6 +1069,10 @@ Instructions:
                           }}
                             style={{ padding: "6px 10px", background: a.status === "active" ? "rgba(255,107,107,.07)" : "rgba(0,255,178,.07)", border: `1px solid ${a.status === "active" ? "rgba(255,107,107,.2)" : "rgba(0,255,178,.2)"}`, borderRadius: "7px", color: a.status === "active" ? "#FF6B6B" : "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", letterSpacing: ".06em", transition: "all .15s" }}
                           >{a.status === "active" ? "PAUSE" : "ACTIVATE"}</button>
+                          <button
+                            onClick={e => { e.stopPropagation(); setActiveAgentChat(a); }}
+                            style={{ padding: "6px 10px", background: `${a.color}10`, border: `1px solid ${a.color}25`, borderRadius: "7px", color: a.color, cursor: "pointer", fontSize: "9px", fontFamily: "inherit", letterSpacing: ".06em" }}
+                          >💬 CHAT</button>
                           <button
                             onClick={async e => {
                             e.stopPropagation();
