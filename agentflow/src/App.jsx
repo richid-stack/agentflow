@@ -31,6 +31,8 @@ const INTEGRATIONS = [
   { name: "HubSpot", icon: "🎯", connected: false, desc: "CRM & pipeline" },
 ];
 
+const ADMIN_UID = "f54313b9-7f30-4749-906d-85122471540d";
+
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "◈" },
   { id: "agents", label: "Agents", icon: "◉" },
@@ -169,8 +171,14 @@ export default function AgentFlow() {
   const [toast, setToast] = useState(null);
   const [msgId, setMsgId] = useState(1);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [gmailEmails, setGmailEmails] = useState([]);
+  const [gmailLoading, setGmailLoading] = useState(false);
   const chatRef = useRef(null);
   const plan = PLANS.find(p => p.id === planId);
+  const isAdmin = user?.id === ADMIN_UID;
 
   useEffect(() => { chatRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatLog]);
 
@@ -277,6 +285,83 @@ export default function AgentFlow() {
     const { data, error } = await supabase.from("subscriptions").select("*").single();
     if (error) return; // no sub yet = free plan
     if (data?.plan) setPlanId(data.plan);
+  };
+
+  // ── Admin: load all users + their agents (admin only) ──
+  const loadAdminData = async () => {
+    if (!isAdmin) return;
+    setAdminLoading(true);
+    try {
+      // Get all agents grouped by user
+      const { data: allAgents } = await supabase
+        .from("agents")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      const { data: allSubs } = await supabase
+        .from("subscriptions")
+        .select("*");
+
+      // Group agents by user_id
+      const byUser = {};
+      (allAgents || []).forEach(a => {
+        if (!byUser[a.user_id]) byUser[a.user_id] = { user_id: a.user_id, agents: [], tasks: 0 };
+        byUser[a.user_id].agents.push(a);
+        byUser[a.user_id].tasks += a.tasks_completed || 0;
+      });
+
+      // Merge subscription data
+      const users = Object.values(byUser).map(u => {
+        const sub = (allSubs || []).find(s => s.user_id === u.user_id);
+        return { ...u, plan: sub?.plan || "free", email: u.user_id };
+      });
+
+      setAdminUsers(users);
+    } catch (e) {
+      console.error("Admin load error:", e);
+    }
+    setAdminLoading(false);
+  };
+
+  // ── Gmail: initiate OAuth flow ──
+  const connectGmail = () => {
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      notify("Set VITE_GOOGLE_CLIENT_ID in .env to connect Gmail");
+      return;
+    }
+    const redirectUri = `${window.location.origin}/api/gmail-callback`;
+    const scope = encodeURIComponent([
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.modify",
+    ].join(" "));
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&state=${user.id}`;
+    window.open(authUrl, "_blank", "width=500,height=600");
+    notify("Gmail OAuth window opened — authorize access and return here");
+  };
+
+  // ── Gmail: load recent emails from our serverless function ──
+  const loadGmailEmails = async () => {
+    setGmailLoading(true);
+    try {
+      const res = await fetch("/api/gmail-emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const data = await res.json();
+      if (data.emails) {
+        setGmailEmails(data.emails);
+        setGmailConnected(true);
+        notify(`Loaded ${data.emails.length} recent emails ✓`);
+      } else {
+        notify("Gmail not connected yet — click Connect first");
+      }
+    } catch (e) {
+      notify("Gmail error: " + e.message);
+    }
+    setGmailLoading(false);
   };
 
   // ── Helpers ──
@@ -464,7 +549,7 @@ Instructions:
       </div>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-        {TABS.map(t => (
+        {[...TABS, ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "⬡" }] : [])].map(t => (
           <button
             key={t.id}
             onClick={() => { setTab(t.id); setDrawerOpen(false); }}
@@ -949,6 +1034,11 @@ Instructions:
                               connected_at: newVal ? new Date().toISOString() : null,
                             }, { onConflict: "user_id,name" });
                           }
+                          // Gmail — launch OAuth flow
+                          if (intg.name === "Gmail" && newVal) {
+                            connectGmail();
+                            return;
+                          }
                           // WhatsApp — send a real test message via Twilio when connecting
                           if (intg.name === "WhatsApp" && newVal) {
                             try {
@@ -1045,11 +1135,138 @@ Your agents can now send messages through this number. Reply anything to test th
               </div>
             )}
 
+
+            {/* ── GMAIL INBOX ── */}
+            {tab === "integrations" && gmailConnected && gmailEmails.length > 0 && (
+              <div style={{ marginTop: "20px", animation: "fadeUp .4s ease" }}>
+                <div style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em" }}>GMAIL</span>
+                  <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Recent Emails</span>
+                  <button onClick={loadGmailEmails} style={{ marginLeft: "auto", padding: "4px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>↻ Refresh</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {gmailEmails.map((email, i) => (
+                    <Glass key={i} style={{ padding: "14px 16px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px", gap: "10px" }}>
+                        <span style={{ color: "#fff", fontSize: "12px", fontWeight: "600", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email.subject || "(no subject)"}</span>
+                        <span style={{ color: "#666", fontSize: "10px", flexShrink: 0 }}>{email.date}</span>
+                      </div>
+                      <div style={{ color: "#888", fontSize: "11px", marginBottom: "6px" }}>From: {email.from}</div>
+                      <div style={{ color: "#bbb", fontSize: "11px", lineHeight: "1.5" }}>{email.snippet}</div>
+                      <div style={{ display: "flex", gap: "6px", marginTop: "10px" }}>
+                        <button
+                          onClick={async () => {
+                            notify("Aria is drafting a reply...");
+                            const res = await fetch("/api/gmail-reply", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ userId: user.id, emailId: email.id, threadId: email.threadId, to: email.from, subject: email.subject, originalBody: email.snippet }),
+                            });
+                            const data = await res.json();
+                            if (data.success) notify("✅ Aria replied to the email!");
+                            else notify("Reply failed: " + data.error);
+                          }}
+                          style={{ padding: "5px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>
+                          ↩ Aria Reply
+                        </button>
+                      </div>
+                    </Glass>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── ADMIN PANEL ── */}
+            {tab === "admin" && isAdmin && (
+              <div style={{ animation: "fadeUp .4s ease" }}>
+                <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "9px", color: "#FFD600", letterSpacing: ".22em" }}>ADMIN</span>
+                  <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Platform Control</span>
+                  <button onClick={loadAdminData} style={{ marginLeft: "auto", padding: "5px 12px", background: "rgba(255,214,0,.06)", border: "1px solid rgba(255,214,0,.15)", borderRadius: "7px", color: "#FFD600", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", letterSpacing: ".08em" }}>↻ REFRESH</button>
+                </div>
+
+                {/* Platform stats */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: "10px", marginBottom: "16px" }}>
+                  {[
+                    { label: "TOTAL USERS", value: adminUsers.length, color: "#00FFB2" },
+                    { label: "TOTAL AGENTS", value: adminUsers.reduce((s, u) => s + u.agents.length, 0), color: "#FFD600" },
+                    { label: "TOTAL TASKS", value: adminUsers.reduce((s, u) => s + u.tasks, 0).toLocaleString(), color: "#A78BFA" },
+                    { label: "PRO USERS", value: adminUsers.filter(u => u.plan === "pro" || u.plan === "agency").length, color: "#FF6B6B" },
+                  ].map((s, i) => (
+                    <Glass key={i} style={{ padding: "16px", position: "relative", overflow: "hidden" }}>
+                      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", background: `linear-gradient(90deg,transparent,${s.color},transparent)` }} />
+                      <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".16em", marginBottom: "8px" }}>{s.label}</div>
+                      <div style={{ fontSize: "26px", fontWeight: "800", color: s.color, fontFamily: "'Syne',sans-serif" }}>{adminLoading ? "..." : s.value}</div>
+                    </Glass>
+                  ))}
+                </div>
+
+                {/* Users list */}
+                {adminLoading ? (
+                  <Glass style={{ padding: "24px", textAlign: "center" }}>
+                    <div style={{ color: "#666", fontSize: "12px" }}>Loading platform data...</div>
+                  </Glass>
+                ) : adminUsers.length === 0 ? (
+                  <Glass style={{ padding: "24px", textAlign: "center" }}>
+                    <div style={{ color: "#666", fontSize: "12px" }}>No users yet. Click REFRESH to load.</div>
+                  </Glass>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {adminUsers.map((u, i) => (
+                      <Glass key={i} style={{ padding: "14px 16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <div style={{ flex: 1, minWidth: "160px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                              <div style={{ width: "24px", height: "24px", borderRadius: "6px", background: "rgba(0,255,178,.08)", border: "1px solid rgba(0,255,178,.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px" }}>👤</div>
+                              <span style={{ color: "#ccc", fontSize: "11px", fontFamily: "monospace" }}>{u.user_id.slice(0, 8)}...{u.user_id.slice(-4)}</span>
+                              {u.user_id === ADMIN_UID && <span style={{ background: "#FFD600", color: "#04050A", fontSize: "7px", padding: "1px 6px", borderRadius: "10px", fontWeight: "700" }}>YOU</span>}
+                            </div>
+                            <div style={{ display: "flex", gap: "12px", marginLeft: "32px" }}>
+                              <span style={{ fontSize: "10px", color: "#888" }}>{u.agents.length} agents</span>
+                              <span style={{ fontSize: "10px", color: "#888" }}>{u.tasks} tasks</span>
+                              <span style={{ fontSize: "10px", color: u.plan === "pro" || u.plan === "agency" ? "#00FFB2" : "#666" }}>{u.plan} plan</span>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                            <button
+                              onClick={async () => {
+                                if (u.user_id === ADMIN_UID) { notify("Cannot delete your own account!"); return; }
+                                if (!confirm("Delete this user and all their data?")) return;
+                                await supabase.from("agents").delete().eq("user_id", u.user_id);
+                                await supabase.from("subscriptions").delete().eq("user_id", u.user_id);
+                                await supabase.from("integrations").delete().eq("user_id", u.user_id);
+                                setAdminUsers(p => p.filter(x => x.user_id !== u.user_id));
+                                notify("User data deleted.");
+                              }}
+                              style={{ padding: "5px 10px", background: "rgba(255,107,107,.06)", border: "1px solid rgba(255,107,107,.15)", borderRadius: "6px", color: "#FF6B6B", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>
+                              🗑 Delete
+                            </button>
+                          </div>
+                        </div>
+                        {/* User's agents */}
+                        {u.agents.length > 0 && (
+                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,.04)", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            {u.agents.map((a, j) => (
+                              <span key={j} style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "12px", background: `${a.color || "#00FFB2"}12`, border: `1px solid ${a.color || "#00FFB2"}25`, color: a.color || "#00FFB2" }}>
+                                {a.icon} {a.name} · {a.status}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </Glass>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
           </main>
 
           {/* Mobile bottom nav */}
           <nav className="mobile-bottom-nav" style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, background: "rgba(4,5,10,.97)", borderTop: "1px solid rgba(255,255,255,.07)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", padding: "8px 0 env(safe-area-inset-bottom, 12px)", justifyContent: "space-around", alignItems: "center" }}>
-            {TABS.map(t => (
+            {[...TABS, ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "⬡" }] : [])].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", padding: "5px 10px", background: "none", border: "none", cursor: "pointer", color: tab === t.id ? "#00FFB2" : "#555", fontFamily: "inherit", transition: "all .15s", minWidth: "50px" }}>
                 <span style={{ fontSize: "17px" }}>{t.icon}</span>
                 <span style={{ fontSize: "8px", letterSpacing: ".06em" }}>{t.label}</span>
