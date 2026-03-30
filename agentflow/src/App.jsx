@@ -301,6 +301,12 @@ export default function AgentFlow() {
       const found = (data || []).find(d => d.name.toLowerCase() === intg.name.toLowerCase());
       return found ? { ...intg, connected: found.connected } : intg;
     }));
+    // Auto-load Gmail if already connected
+    const gmailRecord = (data || []).find(d => d.name === "gmail" && d.connected);
+    if (gmailRecord) {
+      setGmailConnected(true);
+      setTimeout(() => loadGmailEmails(), 800);
+    }
   };
 
   const loadSubscription = async () => {
@@ -682,10 +688,16 @@ Instructions:
     recognition.onerror = (e) => {
       console.error("Speech error:", e.error);
       stopListening();
-      if (e.error !== "no-speech") notify("Mic error: " + e.error);
+      if (e.error === "not-allowed") notify("Microphone blocked. Allow mic access in your browser.");
+      else if (e.error !== "no-speech") notify("Mic error: " + e.error);
     };
 
-    recognition.onend = () => { stopListening(); };
+    recognition.onend = () => {
+      // Only clean up state — don't call stopListening (it would abort before onresult fires)
+      setIsListening(false);
+      stopAudioVisualizer();
+      recognitionRef.current = null;
+    };
     recognition.start();
   };
 
@@ -728,25 +740,32 @@ Instructions:
   };
 
   // ── Aria speaks back ──
+  const voiceEnabledRef = useRef(true);
   const ariaSpeak = (text) => {
-    if (!voiceEnabled) return;
+    if (!voiceEnabledRef.current) return;
     window.speechSynthesis.cancel();
-    const clean = text.replace(/[🇬🇭🔥✅❌⚠️🎯📅🧾💬👋😊]/g, "").replace(/
-+/g, ". ").trim();
-    if (!clean) return;
-    const utt = new SpeechSynthesisUtterance(clean);
-    utt.rate = 1.05;
-    utt.pitch = 1.1;
-    utt.volume = 1;
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"))
-      || voices.find(v => v.lang.startsWith("en-") && !v.name.includes("Male"))
-      || voices[0];
-    if (preferred) utt.voice = preferred;
-    utt.onstart = () => setIsSpeaking(true);
-    utt.onend = () => setIsSpeaking(false);
-    utt.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utt);
+    const clean = text.replace(/\n+/g, ". ").replace(/[^\x00-\x7F]/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean || clean.length < 3) return;
+    const doSpeak = () => {
+      const utt = new SpeechSynthesisUtterance(clean);
+      utt.rate = 1.0;
+      utt.pitch = 1.05;
+      utt.volume = 1;
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"))
+        || voices.find(v => v.lang.startsWith("en-"))
+        || voices[0];
+      if (preferred) utt.voice = preferred;
+      utt.onstart = () => setIsSpeaking(true);
+      utt.onend = () => setIsSpeaking(false);
+      utt.onerror = () => setIsSpeaking(false);
+      window.speechSynthesis.speak(utt);
+    };
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = () => { doSpeak(); window.speechSynthesis.onvoiceschanged = null; };
+    } else {
+      doSpeak();
+    }
   };
 
   // ── sendChat with text param (for voice) ──
@@ -1416,7 +1435,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
                       {/* Voice toggle */}
                       <button
-                        onClick={() => { setVoiceEnabled(v => !v); window.speechSynthesis.cancel(); setIsSpeaking(false); }}
+                        onClick={() => { const next = !voiceEnabledRef.current; voiceEnabledRef.current = next; setVoiceEnabled(next); if (!next) { window.speechSynthesis.cancel(); setIsSpeaking(false); } notify(next ? "Aria voice on 🔊" : "Aria muted 🔇"); }}
                         title={voiceEnabled ? "Mute Aria" : "Unmute Aria"}
                         style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", cursor: "pointer", background: voiceEnabled ? "rgba(0,255,178,.08)" : "rgba(255,255,255,.04)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", transition: "all .2s" }}
                       >{voiceEnabled ? "🔊" : "🔇"}</button>
