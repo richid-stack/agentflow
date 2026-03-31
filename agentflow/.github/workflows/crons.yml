@@ -1,0 +1,42 @@
+name: AgentFlow Cron Jobs
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # Rex — 8am UTC daily
+    - cron: "0 9 * * *"   # Finn — 9am UTC daily
+    - cron: "0 * * * *"   # Nova — every hour
+  workflow_dispatch:       # Allow manual runs from GitHub UI
+
+jobs:
+  rex-appointments:
+    name: Rex — Appointment Reminders
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 8 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger Rex
+        run: |
+          curl -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron-rex"
+
+  finn-invoices:
+    name: Finn — Invoice Reminders
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 9 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger Finn
+        run: |
+          curl -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron-finn"
+
+  nova-leads:
+    name: Nova — Gmail Lead Scan
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger Nova
+        run: |
+          curl -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron-nova"
