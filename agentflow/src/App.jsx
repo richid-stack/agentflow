@@ -36,6 +36,8 @@ const ADMIN_UID = "f54313b9-7f30-4749-906d-85122471540d";
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "◈" },
   { id: "agents", label: "Agents", icon: "◉" },
+  { id: "appointments", label: "Bookings", icon: "📅" },
+  { id: "invoices", label: "Invoices", icon: "🧾" },
   { id: "command", label: "Command", icon: "◎" },
   { id: "integrations", label: "Connect", icon: "◇" },
   { id: "billing", label: "Billing", icon: "◆" },
@@ -176,6 +178,14 @@ export default function AgentFlow() {
   const [gmailConnected, setGmailConnected] = useState(false);
   const [gmailEmails, setGmailEmails] = useState([]);
   const [gmailLoading, setGmailLoading] = useState(false);
+  const [whatsappNumber, setWhatsappNumber] = useState("");
+  const [showWaSetup, setShowWaSetup] = useState(false);
+  const [appointments, setAppointments] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const [showApptForm, setShowApptForm] = useState(false);
+  const [showInvForm, setShowInvForm] = useState(false);
+  const [newAppt, setNewAppt] = useState({ client_name: "", client_phone: "", service: "", date: "", time: "", notes: "" });
+  const [newInv, setNewInv] = useState({ client_name: "", client_phone: "", amount: "", description: "", due_date: "" });
   const [notifications, setNotifications] = useState([]);
   const [showNotifs, setShowNotifs] = useState(false);
   const [darkMode, setDarkMode] = useState(true);
@@ -223,7 +233,7 @@ export default function AgentFlow() {
 
   const loadAll = async () => {
     setDbLoading(true);
-    await Promise.all([loadAgents(), loadIntegrations(), loadSubscription()]);
+    await Promise.all([loadAgents(), loadIntegrations(), loadSubscription(), loadAppointments(), loadInvoices()]);
     setDbLoading(false);
   };
 
@@ -307,12 +317,87 @@ export default function AgentFlow() {
       setGmailConnected(true);
       setTimeout(() => loadGmailEmails(), 800);
     }
+    // Load saved WhatsApp business number
+    const waRecord = (data || []).find(d => d.name === "whatsapp" && d.connected);
+    if (waRecord?.credentials?.businessNumber) {
+      setWhatsappNumber(waRecord.credentials.businessNumber);
+    }
   };
 
   const loadSubscription = async () => {
     const { data, error } = await supabase.from("subscriptions").select("*").single();
-    if (error) return; // no sub yet = free plan
+    if (error) return;
     if (data?.plan) setPlanId(data.plan);
+  };
+
+  const loadAppointments = async () => {
+    const { data, error } = await supabase
+      .from("appointments")
+      .select("*")
+      .order("date", { ascending: true });
+    if (error) { console.error("appointments:", error); return; }
+    setAppointments(data || []);
+  };
+
+  const loadInvoices = async () => {
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) { console.error("invoices:", error); return; }
+    setInvoices(data || []);
+  };
+
+  const saveAppointment = async () => {
+    if (!newAppt.client_name || !newAppt.service || !newAppt.date || !newAppt.time) {
+      notify("Fill in all required fields"); return;
+    }
+    const { error } = await supabase.from("appointments").insert({
+      user_id: user.id,
+      ...newAppt,
+    });
+    if (error) { notify("Failed to save appointment"); return; }
+    setNewAppt({ client_name: "", client_phone: "", service: "", date: "", time: "", notes: "" });
+    setShowApptForm(false);
+    await loadAppointments();
+    notify("Appointment saved! Rex will send a reminder.");
+  };
+
+  const saveInvoice = async () => {
+    if (!newInv.client_name || !newInv.amount) {
+      notify("Fill in client name and amount"); return;
+    }
+    const invoiceNumber = "INV-" + Date.now().toString().slice(-5);
+    const { error } = await supabase.from("invoices").insert({
+      user_id: user.id,
+      ...newInv,
+      amount: parseFloat(newInv.amount),
+      invoice_number: invoiceNumber,
+      status: "pending",
+    });
+    if (error) { notify("Failed to save invoice"); return; }
+    setNewInv({ client_name: "", client_phone: "", amount: "", description: "", due_date: "" });
+    setShowInvForm(false);
+    await loadInvoices();
+    notify("Invoice saved! Finn will follow up on payment.");
+  };
+
+  const markInvoicePaid = async (id) => {
+    await supabase.from("invoices").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", id);
+    await loadInvoices();
+    notify("Invoice marked as paid ✓");
+  };
+
+  const deleteAppointment = async (id) => {
+    await supabase.from("appointments").delete().eq("id", id);
+    await loadAppointments();
+    notify("Appointment removed.");
+  };
+
+  const deleteInvoice = async (id) => {
+    await supabase.from("invoices").delete().eq("id", id);
+    await loadInvoices();
+    notify("Invoice removed.");
   };
 
   // ── Admin: load all users + their agents (admin only) ──
@@ -657,57 +742,64 @@ Instructions:
     if (isListening) { stopListening(); return; }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
 
+    let finalTranscript = "";
+
     recognition.onstart = () => {
       setIsListening(true);
       setTranscript("");
+      finalTranscript = "";
       startAudioVisualizer();
     };
 
     recognition.onresult = (e) => {
       let interim = "";
-      let final = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        else interim += e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          finalTranscript += e.results[i][0].transcript;
+        } else {
+          interim += e.results[i][0].transcript;
+        }
       }
-      setTranscript(final || interim);
-      if (final) {
-        setChatInput(final);
-        stopListening();
-        setTimeout(() => {
-          sendChatWithText(final);
-        }, 300);
-      }
+      setTranscript(finalTranscript + interim);
     };
 
     recognition.onerror = (e) => {
       console.error("Speech error:", e.error);
+      if (e.error === "not-allowed") {
+        notify("Microphone blocked. Allow mic in browser settings then try again.");
+      } else if (e.error !== "no-speech") {
+        notify("Mic error: " + e.error);
+      }
       stopListening();
-      if (e.error === "not-allowed") notify("Microphone blocked. Allow mic access in your browser.");
-      else if (e.error !== "no-speech") notify("Mic error: " + e.error);
     };
 
     recognition.onend = () => {
-      // Only clean up state — don't call stopListening (it would abort before onresult fires)
       setIsListening(false);
       stopAudioVisualizer();
       recognitionRef.current = null;
+      // Send whatever was captured when recognition ends
+      if (finalTranscript.trim()) {
+        setChatInput(finalTranscript.trim());
+        sendChatWithText(finalTranscript.trim());
+        finalTranscript = "";
+      }
     };
     recognition.start();
   };
 
   const stopListening = () => {
-    setIsListening(false);
-    setTranscript("");
-    stopAudioVisualizer();
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch(e) {}
-      recognitionRef.current = null;
+      // Don't null it here — onend will handle cleanup and sending
+    } else {
+      setIsListening(false);
+      setTranscript("");
+      stopAudioVisualizer();
     }
   };
 
@@ -889,7 +981,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: darkMode ? "#04050A" : "#F0F2F5", color: darkMode ? "#E0E0E0" : "#1A1A2E", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden" }}>
+    <div style={{ minHeight: "100vh", background: darkMode ? "#04050A" : "#F0F4F8", color: darkMode ? "#E0E0E0" : "#1A202C", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden" }} className={darkMode ? "" : "light-mode"}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
@@ -915,6 +1007,10 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
         .voice-btn{transition:all .2s cubic-bezier(.16,1,.3,1)}
         .voice-btn:hover{transform:scale(1.05)}
         .voice-btn:active{transform:scale(.96)}
+        .light-mode{background:#F0F4F8!important;color:#1A202C!important}
+        .light-mode .desktop-sidebar>div{background:#fff!important;border-right:1px solid #E2E8F0!important}
+        .light-mode input,.light-mode textarea{color:#1A202C!important;background:#F7FAFC!important;border-color:#CBD5E0!important}
+        .light-mode input::placeholder,.light-mode textarea::placeholder{color:#A0AEC0!important}
         .desktop-sidebar{display:flex}
         .mobile-header{display:none}
         .mobile-bottom-nav{display:none}
@@ -1027,6 +1123,66 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
             <div style={{ display: "flex", gap: "8px" }}>
               <button onClick={() => { setShowPersonaEditor(null); notify(`${showPersonaEditor.name} persona saved! ✓`); }} style={{ flex: 1, padding: "10px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "9px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "12px", fontFamily: "inherit" }}>Save Persona</button>
               <button onClick={() => setShowPersonaEditor(null)} style={{ padding: "10px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "9px", color: "#888", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── WHATSAPP SETUP MODAL ── */}
+      {showWaSetup && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1300, background: "rgba(0,0,0,.88)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }} onClick={() => setShowWaSetup(false)}>
+          <div style={{ width: "100%", maxWidth: "420px", background: "rgba(4,6,12,.99)", border: "1px solid rgba(0,255,178,.18)", borderRadius: "20px", padding: "28px", animation: "fadeUp .3s ease" }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em", marginBottom: "12px" }}>WHATSAPP BUSINESS SETUP</div>
+            <div style={{ color: "#fff", fontFamily: "'Syne',sans-serif", fontSize: "17px", fontWeight: "700", marginBottom: "8px" }}>Connect Your Business Number</div>
+            <p style={{ color: "#888", fontSize: "12px", marginBottom: "20px", lineHeight: "1.6" }}>
+              Enter the WhatsApp number your customers will text. Aria will reply from this number.
+              {whatsappNumber && <span style={{ color: "#00FFB2", display: "block", marginTop: "4px" }}>Current: {whatsappNumber}</span>}
+            </p>
+            <div style={{ marginBottom: "14px" }}>
+              <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "6px" }}>WHATSAPP BUSINESS NUMBER</div>
+              <input
+                id="wa-num"
+                type="tel"
+                placeholder="+233XXXXXXXXX"
+                defaultValue={whatsappNumber}
+                style={{ width: "100%", padding: "12px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: "10px", color: "#fff", fontSize: "15px", fontFamily: "inherit" }}
+              />
+              <div style={{ fontSize: "10px", color: "#555", marginTop: "5px" }}>Include country code e.g. +233541392746</div>
+            </div>
+            <div style={{ padding: "12px", background: "rgba(255,214,0,.04)", border: "1px solid rgba(255,214,0,.12)", borderRadius: "10px", marginBottom: "20px" }}>
+              <div style={{ fontSize: "10px", color: "#FFD600", fontWeight: "700", marginBottom: "3px" }}>Using Twilio Sandbox currently</div>
+              <div style={{ fontSize: "10px", color: "#666", lineHeight: "1.5" }}>Messages go through Twilio for now. Once you get Meta WhatsApp Business API approved, update this to your real business number.</div>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                onClick={async () => {
+                  const num = document.getElementById("wa-num").value.trim();
+                  if (!num) { notify("Enter a valid number"); return; }
+                  setWhatsappNumber(num);
+                  if (user) {
+                    await supabase.from("integrations").upsert({
+                      user_id: user.id,
+                      name: "whatsapp",
+                      connected: true,
+                      credentials: { businessNumber: num },
+                      connected_at: new Date().toISOString(),
+                    }, { onConflict: "user_id,name" });
+                    setIntegrations(p => p.map(x => x.name === "WhatsApp" ? { ...x, connected: true } : x));
+                  }
+                  setShowWaSetup(false);
+                  notify("WhatsApp number saved!");
+                  try {
+                    await fetch("/api/whatsapp", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ to: num, message: "WhatsApp connected to AgentFlow! Your agents can now reply to your customers automatically." }),
+                    });
+                    notify("Test message sent to " + num);
+                  } catch(e) {}
+                }}
+                style={{ flex: 1, padding: "12px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "10px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "13px", fontFamily: "inherit" }}
+              >Save & Connect</button>
+              <button onClick={() => setShowWaSetup(false)} style={{ padding: "12px 16px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "10px", color: "#888", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
             </div>
           </div>
         </div>
@@ -1389,7 +1545,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                           <div style={{ position: "absolute", inset: "-8px", borderRadius: "50%", border: "1.5px solid rgba(0,255,178,.2)", animation: "voiceRing3 1.4s ease-out .4s infinite" }} />
                         </>}
                         <button
-                          onClick={startListening}
+                          onClick={isListening ? stopListening : startListening}
                           className="voice-btn"
                           style={{
                             width: "44px", height: "44px", borderRadius: "50%", border: "none", cursor: "pointer",
@@ -1486,31 +1642,12 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                             connectGmail();
                             return;
                           }
-                          // WhatsApp — send a real test message via Twilio when connecting
+                          // WhatsApp — show number setup modal
                           if (intg.name === "WhatsApp" && newVal) {
-                            try {
-                              const res = await fetch("/api/whatsapp", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  to: user?.phone || import.meta.env.VITE_TEST_WHATSAPP_NUMBER,
-                                  message: `✅ WhatsApp connected to AgentFlow!
-
-Your agents can now send messages through this number. Reply anything to test the connection.`,
-                                }),
-                              });
-                              const data = await res.json();
-                              if (data.success) {
-                                notify("WhatsApp connected! Check your phone 📱");
-                              } else {
-                                notify("WhatsApp saved — test message failed: " + data.error);
-                              }
-                            } catch (e) {
-                              notify("WhatsApp connected ✓ (test message failed)");
-                            }
-                          } else {
-                            notify(intg.connected ? `${intg.name} disconnected.` : `${intg.name} connected! ✓`);
+                            setShowWaSetup(true);
+                            return;
                           }
+                          notify(intg.connected ? `${intg.name} disconnected.` : `${intg.name} connected! ✓`);
                         }}
                         style={{ width: "100%", padding: "7px", fontFamily: "inherit", fontSize: "10px", cursor: "pointer", background: intg.connected ? "rgba(255,107,107,.06)" : "rgba(0,255,178,.06)", border: `1px solid ${intg.connected ? "rgba(255,107,107,.18)" : "rgba(0,255,178,.18)"}`, borderRadius: "7px", color: intg.connected ? "#FF6B6B" : "#00FFB2", letterSpacing: ".08em", transition: "all .15s" }}
                       >{intg.connected ? "DISCONNECT" : "CONNECT"}</button>
@@ -1621,6 +1758,168 @@ Your agents can now send messages through this number. Reply anything to test th
                     </Glass>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* ── APPOINTMENTS ── */}
+            {tab === "appointments" && (
+              <div style={{ animation: "fadeUp .4s ease" }}>
+                <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "9px", color: "#FFD600", letterSpacing: ".22em" }}>REX</span>
+                  <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Bookings</span>
+                  <span style={{ color: "#666", fontSize: "10px" }}>{appointments.length} total</span>
+                  <button onClick={() => setShowApptForm(p => !p)} style={{ marginLeft: "auto", padding: "8px 16px", background: "linear-gradient(135deg,#FFD600,#F0A500)", border: "none", borderRadius: "9px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>+ Book Appointment</button>
+                </div>
+
+                {showApptForm && (
+                  <Glass style={{ padding: "18px", marginBottom: "14px", border: "1px solid rgba(255,214,0,.2)", animation: "fadeUp .3s ease" }}>
+                    <div style={{ fontSize: "9px", color: "#FFD600", letterSpacing: ".22em", marginBottom: "14px" }}>NEW APPOINTMENT</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: "10px" }}>
+                      {[
+                        { label: "CLIENT NAME *", key: "client_name", placeholder: "e.g. Kwame Asante" },
+                        { label: "PHONE (WhatsApp)", key: "client_phone", placeholder: "+233XXXXXXXXX" },
+                        { label: "SERVICE *", key: "service", placeholder: "e.g. Dental Checkup" },
+                        { label: "DATE *", key: "date", type: "date" },
+                        { label: "TIME *", key: "time", type: "time" },
+                        { label: "NOTES", key: "notes", placeholder: "Optional notes" },
+                      ].map(f => (
+                        <div key={f.key}>
+                          <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".15em", marginBottom: "5px" }}>{f.label}</div>
+                          <input
+                            type={f.type || "text"}
+                            placeholder={f.placeholder || ""}
+                            value={newAppt[f.key]}
+                            onChange={e => setNewAppt(p => ({ ...p, [f.key]: e.target.value }))}
+                            style={{ width: "100%", padding: "9px 11px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: "8px", color: "#fff", fontSize: "12px", fontFamily: "inherit" }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", marginTop: "14px" }}>
+                      <button onClick={saveAppointment} style={{ padding: "9px 20px", background: "linear-gradient(135deg,#FFD600,#F0A500)", border: "none", borderRadius: "8px", color: "#04050A", fontWeight: "700", cursor: "pointer", fontSize: "12px", fontFamily: "inherit" }}>Save Appointment</button>
+                      <button onClick={() => setShowApptForm(false)} style={{ padding: "9px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "8px", color: "#888", cursor: "pointer", fontSize: "13px" }}>✕</button>
+                    </div>
+                  </Glass>
+                )}
+
+                {appointments.length === 0 ? (
+                  <Glass style={{ padding: "32px", textAlign: "center" }}>
+                    <div style={{ fontSize: "32px", marginBottom: "10px" }}>📅</div>
+                    <div style={{ color: "#666", fontSize: "12px" }}>No appointments yet. Book your first one above — Rex will send reminders automatically.</div>
+                  </Glass>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {appointments.map((a, i) => (
+                      <Glass key={a.id} style={{ padding: "14px 16px", animation: `fadeUp .3s ease ${i * 40}ms both` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                              <span style={{ color: "#fff", fontWeight: "700", fontSize: "13px", fontFamily: "'Syne',sans-serif" }}>{a.client_name}</span>
+                              <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "10px", background: a.status === "confirmed" ? "rgba(0,255,178,.1)" : a.status === "completed" ? "rgba(96,165,250,.1)" : "rgba(255,107,107,.1)", color: a.status === "confirmed" ? "#00FFB2" : a.status === "completed" ? "#60A5FA" : "#FF6B6B", border: `1px solid ${a.status === "confirmed" ? "rgba(0,255,178,.2)" : a.status === "completed" ? "rgba(96,165,250,.2)" : "rgba(255,107,107,.2)"}` }}>{a.status}</span>
+                            </div>
+                            <div style={{ color: "#888", fontSize: "11px" }}>{a.service} · {new Date(a.date).toLocaleDateString("en-GH", { weekday: "short", day: "numeric", month: "short" })} at {a.time}</div>
+                            {a.client_phone && <div style={{ color: "#666", fontSize: "10px", marginTop: "2px" }}>{a.client_phone}</div>}
+                          </div>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            {a.status !== "completed" && (
+                              <button onClick={async () => { await supabase.from("appointments").update({ status: "completed" }).eq("id", a.id); await loadAppointments(); notify("Marked complete!"); }} style={{ padding: "5px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>✓ Done</button>
+                            )}
+                            <button onClick={() => deleteAppointment(a.id)} style={{ padding: "5px 8px", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)", borderRadius: "6px", color: "#666", cursor: "pointer", fontSize: "11px" }}>🗑</button>
+                          </div>
+                        </div>
+                      </Glass>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── INVOICES ── */}
+            {tab === "invoices" && (
+              <div style={{ animation: "fadeUp .4s ease" }}>
+                <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "9px", color: "#FF6B6B", letterSpacing: ".22em" }}>FINN</span>
+                  <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Invoices</span>
+                  <span style={{ color: "#666", fontSize: "10px" }}>{invoices.filter(i => i.status === "pending").length} pending</span>
+                  <button onClick={() => setShowInvForm(p => !p)} style={{ marginLeft: "auto", padding: "8px 16px", background: "linear-gradient(135deg,#FF6B6B,#E05555)", border: "none", borderRadius: "9px", color: "#fff", fontWeight: "700", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>+ New Invoice</button>
+                </div>
+
+                {/* Summary cards */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: "10px", marginBottom: "14px" }}>
+                  {[
+                    { label: "TOTAL BILLED", value: `GHS ${invoices.reduce((s, i) => s + Number(i.amount), 0).toLocaleString()}`, color: "#FF6B6B" },
+                    { label: "COLLECTED", value: `GHS ${invoices.filter(i => i.status === "paid").reduce((s, i) => s + Number(i.amount), 0).toLocaleString()}`, color: "#00FFB2" },
+                    { label: "OUTSTANDING", value: `GHS ${invoices.filter(i => i.status !== "paid").reduce((s, i) => s + Number(i.amount), 0).toLocaleString()}`, color: "#FFD600" },
+                  ].map((s, i) => (
+                    <Glass key={i} style={{ padding: "14px" }}>
+                      <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".15em", marginBottom: "6px" }}>{s.label}</div>
+                      <div style={{ fontSize: "16px", fontWeight: "800", color: s.color, fontFamily: "'Syne',sans-serif" }}>{s.value}</div>
+                    </Glass>
+                  ))}
+                </div>
+
+                {showInvForm && (
+                  <Glass style={{ padding: "18px", marginBottom: "14px", border: "1px solid rgba(255,107,107,.2)", animation: "fadeUp .3s ease" }}>
+                    <div style={{ fontSize: "9px", color: "#FF6B6B", letterSpacing: ".22em", marginBottom: "14px" }}>NEW INVOICE</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: "10px" }}>
+                      {[
+                        { label: "CLIENT NAME *", key: "client_name", placeholder: "e.g. Darko Enterprises" },
+                        { label: "PHONE (WhatsApp)", key: "client_phone", placeholder: "+233XXXXXXXXX" },
+                        { label: "AMOUNT (GHS) *", key: "amount", placeholder: "e.g. 2500", type: "number" },
+                        { label: "DESCRIPTION", key: "description", placeholder: "e.g. Web design services" },
+                        { label: "DUE DATE", key: "due_date", type: "date" },
+                      ].map(f => (
+                        <div key={f.key}>
+                          <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".15em", marginBottom: "5px" }}>{f.label}</div>
+                          <input
+                            type={f.type || "text"}
+                            placeholder={f.placeholder || ""}
+                            value={newInv[f.key]}
+                            onChange={e => setNewInv(p => ({ ...p, [f.key]: e.target.value }))}
+                            style={{ width: "100%", padding: "9px 11px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: "8px", color: "#fff", fontSize: "12px", fontFamily: "inherit" }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", marginTop: "14px" }}>
+                      <button onClick={saveInvoice} style={{ padding: "9px 20px", background: "linear-gradient(135deg,#FF6B6B,#E05555)", border: "none", borderRadius: "8px", color: "#fff", fontWeight: "700", cursor: "pointer", fontSize: "12px", fontFamily: "inherit" }}>Save Invoice</button>
+                      <button onClick={() => setShowInvForm(false)} style={{ padding: "9px 14px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "8px", color: "#888", cursor: "pointer", fontSize: "13px" }}>✕</button>
+                    </div>
+                  </Glass>
+                )}
+
+                {invoices.length === 0 ? (
+                  <Glass style={{ padding: "32px", textAlign: "center" }}>
+                    <div style={{ fontSize: "32px", marginBottom: "10px" }}>🧾</div>
+                    <div style={{ color: "#666", fontSize: "12px" }}>No invoices yet. Create your first one above — Finn will follow up on payments automatically.</div>
+                  </Glass>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {invoices.map((inv, i) => (
+                      <Glass key={inv.id} style={{ padding: "14px 16px", animation: `fadeUp .3s ease ${i * 40}ms both`, border: inv.status === "overdue" ? "1px solid rgba(255,107,107,.2)" : "1px solid rgba(255,255,255,.07)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                              <span style={{ color: "#fff", fontWeight: "700", fontSize: "13px", fontFamily: "'Syne',sans-serif" }}>{inv.client_name}</span>
+                              <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "10px", background: inv.status === "paid" ? "rgba(0,255,178,.1)" : inv.status === "overdue" ? "rgba(255,107,107,.1)" : "rgba(255,214,0,.1)", color: inv.status === "paid" ? "#00FFB2" : inv.status === "overdue" ? "#FF6B6B" : "#FFD600", border: `1px solid ${inv.status === "paid" ? "rgba(0,255,178,.2)" : inv.status === "overdue" ? "rgba(255,107,107,.2)" : "rgba(255,214,0,.2)"}` }}>{inv.status}</span>
+                              <span style={{ color: "#FF6B6B", fontWeight: "800", fontSize: "13px", fontFamily: "'Syne',sans-serif", marginLeft: "4px" }}>GHS {Number(inv.amount).toLocaleString()}</span>
+                            </div>
+                            <div style={{ color: "#888", fontSize: "11px" }}>{inv.invoice_number} · {inv.description || "No description"}</div>
+                            {inv.due_date && <div style={{ color: "#666", fontSize: "10px", marginTop: "2px" }}>Due: {new Date(inv.due_date).toLocaleDateString("en-GH")}</div>}
+                          </div>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            {inv.status !== "paid" && (
+                              <button onClick={() => markInvoicePaid(inv.id)} style={{ padding: "5px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>✓ Paid</button>
+                            )}
+                            <button onClick={() => deleteInvoice(inv.id)} style={{ padding: "5px 8px", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)", borderRadius: "6px", color: "#666", cursor: "pointer", fontSize: "11px" }}>🗑</button>
+                          </div>
+                        </div>
+                      </Glass>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
