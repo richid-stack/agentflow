@@ -97,13 +97,18 @@ function Glass({ children, style = {}, onClick, hover = false }) {
       onMouseEnter={() => hover && setHov(true)}
       onMouseLeave={() => hover && setHov(false)}
       style={{
-        background: hov ? "rgba(0,255,178,.028)" : "rgba(255,255,255,.03)",
-        border: hov ? "1px solid rgba(0,255,178,.18)" : "1px solid rgba(255,255,255,.08)",
-        borderRadius: "18px",
-        backdropFilter: "blur(24px)",
-        WebkitBackdropFilter: "blur(24px)",
-        transform: hov ? "translateY(-2px)" : "translateY(0)",
-        transition: "all .25s cubic-bezier(.16,1,.3,1)",
+        background: hov
+          ? "linear-gradient(135deg,rgba(0,255,178,.05) 0%,rgba(255,255,255,.04) 100%)"
+          : "linear-gradient(135deg,rgba(255,255,255,.04) 0%,rgba(255,255,255,.02) 100%)",
+        border: hov ? "1px solid rgba(0,255,178,.25)" : "1px solid rgba(255,255,255,.07)",
+        borderRadius: "20px",
+        backdropFilter: "blur(32px)",
+        WebkitBackdropFilter: "blur(32px)",
+        boxShadow: hov
+          ? "0 8px 32px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.08), 0 0 0 1px rgba(0,255,178,.06)"
+          : "0 4px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.05)",
+        transform: hov ? "translateY(-3px)" : "translateY(0)",
+        transition: "all .3s cubic-bezier(.16,1,.3,1)",
         ...style
       }}>
       {children}
@@ -188,7 +193,7 @@ export default function AgentFlow() {
   const [newInv, setNewInv] = useState({ client_name: "", client_phone: "", amount: "", description: "", due_date: "" });
   const [notifications, setNotifications] = useState([]);
   const [showNotifs, setShowNotifs] = useState(false);
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('af_dark') !== 'false');
   const [activeAgentChat, setActiveAgentChat] = useState(null); // agent being chatted with
   const [agentChatLog, setAgentChatLog] = useState({});
   const [agentChatInput, setAgentChatInput] = useState("");
@@ -700,8 +705,8 @@ Instructions:
 
   // ── Trigger agent action → sends real WhatsApp notification ──
   const triggerAgent = async (agent, triggerType, data = {}) => {
-    const notifyNumber = import.meta.env.VITE_TEST_WHATSAPP_NUMBER;
-    if (!notifyNumber) { notify("Set VITE_TEST_WHATSAPP_NUMBER in .env to receive alerts"); return; }
+    const notifyNumber = whatsappNumber || import.meta.env.VITE_TEST_WHATSAPP_NUMBER;
+    if (!notifyNumber) { notify("Connect your WhatsApp number in the Connect tab first"); return; }
     notify(`${agent.name} triggered — sending WhatsApp alert...`);
     try {
       const res = await fetch("/api/agent-trigger", {
@@ -876,6 +881,8 @@ Current platform state:
 - Total tasks: ${agents.reduce((s,a)=>s+a.tasks,0)}
 - Connected integrations: ${integrations.filter(i=>i.connected).map(i=>i.name).join(", ")}
 - Plan: ${plan.name}
+- Upcoming appointments: ${appointments.filter(a=>a.status==="confirmed").length} confirmed
+- Pending invoices: ${invoices.filter(i=>i.status==="pending").length} pending, GHS ${invoices.filter(i=>i.status!=="paid").reduce((s,i)=>s+Number(i.amount),0).toLocaleString()} outstanding
 Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragraphs.`;
     try {
       const history = chatLog.filter(m => m.from === "user" || m.from === "aria").map(m => ({ role: m.from === "user" ? "user" : "model", parts: [{ text: m.text }] }));
@@ -893,65 +900,85 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
   const SidebarContent = () => (
     <>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "32px" }}>
-        <div style={{ width: "32px", height: "32px", minWidth: "32px", borderRadius: "9px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Syne',sans-serif", fontWeight: "900", color: "#04050A", fontSize: "16px", boxShadow: "0 0 20px rgba(0,255,178,.35)" }}>A</div>
+      {/* Logo */}
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "36px", padding: "4px 0" }}>
+        <div style={{ width: "36px", height: "36px", minWidth: "36px", borderRadius: "11px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Syne',sans-serif", fontWeight: "900", color: "#04050A", fontSize: "18px", boxShadow: "0 0 24px rgba(0,255,178,.45), 0 4px 12px rgba(0,0,0,.3)" }}>A</div>
         <div>
-          <div style={{ color: "#fff", fontWeight: "700", fontSize: "13px", fontFamily: "'Syne',sans-serif" }}>AgentFlow</div>
-          <div style={{ color: "#00FFB2", fontSize: "8px", letterSpacing: ".2em" }}>GHANA 🇬🇭</div>
+          <div style={{ color: "#fff", fontWeight: "800", fontSize: "14px", fontFamily: "'Syne',sans-serif", letterSpacing: "-.01em" }}>AgentFlow</div>
+          <div style={{ color: "#00FFB2", fontSize: "8px", letterSpacing: ".22em", opacity: .8 }}>GHANA 🇬🇭</div>
         </div>
       </div>
 
-      <nav style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+      {/* Nav */}
+      <nav style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
         {[...TABS, ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "⬡" }] : [])].map(t => (
           <button
             key={t.id}
+            className="nav-btn"
             onClick={() => { setTab(t.id); setDrawerOpen(false); }}
             style={{
-              display: "flex", gap: "11px", alignItems: "center", padding: "10px 13px",
-              borderRadius: "10px", border: "none", cursor: "pointer",
-              background: tab === t.id ? "rgba(0,255,178,.09)" : "transparent",
-              color: tab === t.id ? "#00FFB2" : "#888",
+              display: "flex", gap: "12px", alignItems: "center", padding: "11px 14px",
+              borderRadius: "11px", border: "none", cursor: "pointer",
+              background: tab === t.id
+                ? "linear-gradient(135deg,rgba(0,255,178,.12),rgba(0,255,178,.06))"
+                : "transparent",
+              color: tab === t.id ? "#00FFB2" : "#666",
               fontSize: "12px", fontFamily: "inherit", textAlign: "left", width: "100%",
               borderLeft: tab === t.id ? "2px solid #00FFB2" : "2px solid transparent",
-              transition: "all .15s",
+              boxShadow: tab === t.id ? "inset 0 1px 0 rgba(0,255,178,.1)" : "none",
+              transition: "all .2s cubic-bezier(.16,1,.3,1)",
+              letterSpacing: ".02em",
             }}
-            onMouseEnter={e => { if (tab !== t.id) { e.currentTarget.style.background = "rgba(0,255,178,.05)"; e.currentTarget.style.color = "#ccc"; } }}
-            onMouseLeave={e => { if (tab !== t.id) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#888"; } }}
           >
-            <span style={{ fontSize: "13px" }}>{t.icon}</span>
-            <span>{t.label}</span>
+            <span style={{ fontSize: "14px", opacity: tab === t.id ? 1 : 0.6 }}>{t.icon}</span>
+            <span style={{ fontWeight: tab === t.id ? "600" : "400" }}>{t.label}</span>
+            {t.id === "invoices" && invoices.filter(i => i.status === "pending").length > 0 && (
+              <span style={{ marginLeft: "auto", fontSize: "8px", padding: "2px 6px", borderRadius: "10px", background: "rgba(255,107,107,.15)", color: "#FF6B6B", border: "1px solid rgba(255,107,107,.2)", fontWeight: "700" }}>
+                {invoices.filter(i => i.status === "pending").length}
+              </span>
+            )}
+            {t.id === "appointments" && appointments.filter(a => a.status === "confirmed").length > 0 && (
+              <span style={{ marginLeft: "auto", fontSize: "8px", padding: "2px 6px", borderRadius: "10px", background: "rgba(255,214,0,.1)", color: "#FFD600", border: "1px solid rgba(255,214,0,.2)", fontWeight: "700" }}>
+                {appointments.filter(a => a.status === "confirmed").length}
+              </span>
+            )}
           </button>
         ))}
       </nav>
 
+      {/* Bottom */}
       <div style={{ marginTop: "auto", paddingTop: "20px" }}>
-        <div style={{ padding: "13px", background: "rgba(0,255,178,.04)", border: "1px solid rgba(0,255,178,.1)", borderRadius: "12px", marginBottom: "14px" }}>
-          <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".2em", marginBottom: "3px" }}>CURRENT PLAN</div>
-          <div style={{ color: "#00FFB2", fontWeight: "700", fontFamily: "'Syne',sans-serif", fontSize: "15px" }}>{plan.name}</div>
-          <div style={{ fontSize: "10px", color: "#888", marginBottom: "8px" }}>{agents.length}/{plan.agents} agents used</div>
-          <div style={{ height: "2px", background: "rgba(255,255,255,.07)", borderRadius: "1px" }}>
-            <div style={{ height: "100%", borderRadius: "1px", width: `${Math.min((agents.length / plan.agents) * 100, 100)}%`, background: agents.length >= plan.agents ? "#FF6B6B" : "#00FFB2", boxShadow: "0 0 8px rgba(0,255,178,.4)", transition: "width .5s" }} />
+        {/* Plan card */}
+        <div style={{ padding: "14px", background: "linear-gradient(135deg,rgba(0,255,178,.06),rgba(0,255,178,.02))", border: "1px solid rgba(0,255,178,.12)", borderRadius: "14px", marginBottom: "14px", boxShadow: "inset 0 1px 0 rgba(0,255,178,.08)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <div>
+              <div style={{ fontSize: "8px", color: "#555", letterSpacing: ".2em", marginBottom: "2px" }}>PLAN</div>
+              <div style={{ color: "#00FFB2", fontWeight: "800", fontFamily: "'Syne',sans-serif", fontSize: "14px" }}>{plan.name}</div>
+            </div>
+            <div style={{ fontSize: "9px", color: "#666" }}>{agents.length}/{plan.agents}</div>
           </div>
-          <button onClick={() => setShowUpgrade(true)} style={{ marginTop: "9px", width: "100%", padding: "7px", background: "rgba(0,255,178,.08)", border: "1px solid rgba(0,255,178,.14)", borderRadius: "7px", color: "#00FFB2", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", letterSpacing: ".08em", transition: "all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,255,178,.14)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "rgba(0,255,178,.08)"; }}
+          <div style={{ height: "3px", background: "rgba(255,255,255,.06)", borderRadius: "2px", marginBottom: "10px" }}>
+            <div style={{ height: "100%", borderRadius: "2px", width: `${Math.min((agents.length / plan.agents) * 100, 100)}%`, background: agents.length >= plan.agents ? "#FF6B6B" : "linear-gradient(90deg,#00FFB2,#00C88A)", boxShadow: "0 0 8px rgba(0,255,178,.5)", transition: "width .6s" }} />
+          </div>
+          <button onClick={() => setShowUpgrade(true)} style={{ width: "100%", padding: "7px", background: "rgba(0,255,178,.1)", border: "1px solid rgba(0,255,178,.18)", borderRadius: "8px", color: "#00FFB2", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", letterSpacing: ".08em", fontWeight: "600", transition: "all .2s" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,255,178,.18)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,255,178,.15)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "rgba(0,255,178,.1)"; e.currentTarget.style.boxShadow = "none"; }}
           >↑ UPGRADE</button>
         </div>
-        <div style={{ display: "flex", gap: "9px", alignItems: "center" }}>
-          <div style={{ width: "28px", height: "28px", minWidth: "28px", borderRadius: "8px", background: "rgba(0,255,178,.08)", border: "1px solid rgba(0,255,178,.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px" }}>👤</div>
+
+        {/* User row */}
+        <div style={{ display: "flex", gap: "9px", alignItems: "center", padding: "8px 4px" }}>
+          <div style={{ width: "30px", height: "30px", minWidth: "30px", borderRadius: "9px", background: "linear-gradient(135deg,rgba(0,255,178,.15),rgba(0,255,178,.05))", border: "1px solid rgba(0,255,178,.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px" }}>👤</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ color: "#ccc", fontSize: "10px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email?.split("@")[0] || "Your Business"}</div>
-            <div style={{ color: "#888", fontSize: "9px" }}>Ghana 🇬🇭</div>
+            <div style={{ color: "#555", fontSize: "9px" }}>Free plan</div>
           </div>
-              <button onClick={() => setDarkMode(d => !d)} title="Toggle theme" style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px" }}>{darkMode ? "☀️" : "🌙"}</button>
-              <div style={{ position: "relative" }}>
-                <button onClick={() => setShowNotifs(s => !s)} title="Notifications" className={unreadNotifs > 0 ? "bell-animate" : ""} style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px" }}>🔔</button>
-                {unreadNotifs > 0 && <div style={{ position: "absolute", top: "-2px", right: "-2px", width: "14px", height: "14px", borderRadius: "50%", background: "#FF6B6B", fontSize: "8px", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700" }}>{unreadNotifs}</div>}
-              </div>
-              <button onClick={() => supabase.auth.signOut()} title="Sign out" style={{ background: "none", border: "none", cursor: "pointer", color: "#555", fontSize: "13px", padding: "3px", transition: "color .15s", flexShrink: 0 }}
-                onMouseEnter={e => e.target.style.color="#FF6B6B"}
-                onMouseLeave={e => e.target.style.color="#555"}
-              >⏻</button>
+          <button onClick={() => setDarkMode(d => { const n = !d; localStorage.setItem('af_dark', String(n)); return n; })} title="Toggle theme" style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", padding: "4px", opacity: .6, transition: "opacity .2s" }} onMouseEnter={e => e.currentTarget.style.opacity=1} onMouseLeave={e => e.currentTarget.style.opacity=.6}>{darkMode ? "☀️" : "🌙"}</button>
+          <div style={{ position: "relative" }}>
+            <button onClick={() => setShowNotifs(s => !s)} className={unreadNotifs > 0 ? "bell-animate" : ""} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", padding: "4px", opacity: .6, transition: "opacity .2s" }} onMouseEnter={e => e.currentTarget.style.opacity=1} onMouseLeave={e => e.currentTarget.style.opacity=.6}>🔔</button>
+            {unreadNotifs > 0 && <div style={{ position: "absolute", top: "0", right: "0", width: "12px", height: "12px", borderRadius: "50%", background: "#FF6B6B", fontSize: "7px", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", border: "2px solid #04050A" }}>{unreadNotifs > 9 ? "9+" : unreadNotifs}</div>}
+          </div>
+          <button onClick={() => supabase.auth.signOut()} title="Sign out" style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", padding: "4px", opacity: .4, transition: "opacity .2s, color .2s", color: "#fff" }} onMouseEnter={e => { e.currentTarget.style.opacity=1; e.currentTarget.style.color="#FF6B6B"; }} onMouseLeave={e => { e.currentTarget.style.opacity=.4; e.currentTarget.style.color="#fff"; }}>⏻</button>
         </div>
       </div>
     </>
@@ -983,40 +1010,45 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
   return (
     <div style={{ minHeight: "100vh", background: darkMode ? "#04050A" : "#F0F4F8", color: darkMode ? "#E0E0E0" : "#1A202C", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden" }} className={darkMode ? "" : "light-mode"}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
-        ::-webkit-scrollbar{width:3px}
-        ::-webkit-scrollbar-thumb{background:rgba(0,255,178,.2);border-radius:2px}
-        input::placeholder,textarea::placeholder{color:#555}
-        input:focus,textarea:focus{outline:none!important;border-color:rgba(0,255,178,.35)!important;background:rgba(255,255,255,.05)!important}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+        ::-webkit-scrollbar{width:4px;height:4px}
+        ::-webkit-scrollbar-track{background:transparent}
+        ::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(0,255,178,.3),rgba(0,255,178,.1));border-radius:4px}
+        ::-webkit-scrollbar-thumb:hover{background:rgba(0,255,178,.5)}
+        input::placeholder,textarea::placeholder{color:#444}
+        input:focus,textarea:focus{outline:none!important;border-color:rgba(0,255,178,.4)!important;background:rgba(0,255,178,.03)!important;box-shadow:0 0 0 3px rgba(0,255,178,.06)!important}
+        button{font-family:'JetBrains Mono',monospace}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
         @keyframes fadeIn{from{opacity:0}to{opacity:1}}
         @keyframes slideRight{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:translateX(0)}}
         @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-        @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px #00FFB2}50%{opacity:.4;box-shadow:0 0 2px #00FFB2}}
-        @keyframes glow{0%,100%{box-shadow:0 0 18px rgba(0,255,178,.15)}50%{box-shadow:0 0 30px rgba(0,255,178,.28)}}
-        @keyframes toast{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
-        @keyframes dotBounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
-        @keyframes voicePulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.12);opacity:.85}}
-        @keyframes voiceRing1{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.8);opacity:0}}
-        @keyframes voiceRing2{0%{transform:scale(1);opacity:.4}100%{transform:scale(2.2);opacity:0}}
-        @keyframes voiceRing3{0%{transform:scale(1);opacity:.25}100%{transform:scale(2.6);opacity:0}}
-        @keyframes waveBar{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1)}}
-        @keyframes speakPulse{0%,100%{box-shadow:0 0 0 0 rgba(0,255,178,.4)}50%{box-shadow:0 0 0 12px rgba(0,255,178,0)}}
-        @keyframes voiceOverlayIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
-        .voice-btn{transition:all .2s cubic-bezier(.16,1,.3,1)}
-        .voice-btn:hover{transform:scale(1.05)}
-        .voice-btn:active{transform:scale(.96)}
+        @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 8px #00FFB2}50%{opacity:.3;box-shadow:0 0 2px #00FFB2}}
+        @keyframes glow{0%,100%{box-shadow:0 0 20px rgba(0,255,178,.2)}50%{box-shadow:0 0 40px rgba(0,255,178,.35)}}
+        @keyframes toast{from{opacity:0;transform:translateX(20px) scale(.95)}to{opacity:1;transform:translateX(0) scale(1)}}
+        @keyframes dotBounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-7px)}}
+        @keyframes voicePulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.15);opacity:.8}}
+        @keyframes voiceRing1{0%{transform:scale(1);opacity:.7}100%{transform:scale(2);opacity:0}}
+        @keyframes voiceRing2{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.5);opacity:0}}
+        @keyframes voiceRing3{0%{transform:scale(1);opacity:.3}100%{transform:scale(3);opacity:0}}
+        @keyframes waveBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+        @keyframes speakPulse{0%,100%{box-shadow:0 0 0 0 rgba(0,255,178,.5)}50%{box-shadow:0 0 0 14px rgba(0,255,178,0)}}
+        @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+        @keyframes bellShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-15deg)}40%{transform:rotate(15deg)}60%{transform:rotate(-8deg)}80%{transform:rotate(8deg)}}
+        @keyframes notifSlide{from{opacity:0;transform:translateY(-10px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+        .bell-animate{animation:bellShake .5s ease}
+        .voice-btn{transition:all .25s cubic-bezier(.16,1,.3,1)}
+        .voice-btn:hover{transform:scale(1.08)}
+        .voice-btn:active{transform:scale(.93)}
+        .nav-btn{position:relative;transition:all .2s cubic-bezier(.16,1,.3,1)}
+        .nav-btn::before{content:'';position:absolute;inset:0;border-radius:11px;background:rgba(0,255,178,.0);transition:background .2s}
+        .nav-btn:hover::before{background:rgba(0,255,178,.06)}
         .light-mode{background:#F0F4F8!important;color:#1A202C!important}
-        .light-mode .desktop-sidebar>div{background:#fff!important;border-right:1px solid #E2E8F0!important}
         .light-mode input,.light-mode textarea{color:#1A202C!important;background:#F7FAFC!important;border-color:#CBD5E0!important}
         .light-mode input::placeholder,.light-mode textarea::placeholder{color:#A0AEC0!important}
         .desktop-sidebar{display:flex}
         .mobile-header{display:none}
         .mobile-bottom-nav{display:none}
-        @keyframes bellShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-15deg)}40%{transform:rotate(15deg)}60%{transform:rotate(-10deg)}80%{transform:rotate(10deg)}}
-        @keyframes notifSlide{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
-        .bell-animate{animation:bellShake .5s ease}
         @media(max-width:768px){
           .desktop-sidebar{display:none!important}
           .mobile-header{display:flex!important}
@@ -1025,11 +1057,12 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
         }
       `}</style>
 
-      {/* BG ambient orbs */}
+      {/* BG ambient orbs — richer, more premium */}
       <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
-        <div style={{ position: "absolute", top: "-25%", right: "-10%", width: "55vw", height: "55vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(0,255,178,.07) 0%,transparent 70%)" }} />
-        <div style={{ position: "absolute", bottom: "-20%", left: "-10%", width: "45vw", height: "45vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(0,200,120,.05) 0%,transparent 70%)" }} />
-        <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,255,178,.008) 3px,rgba(0,255,178,.008) 4px)" }} />
+        <div style={{ position: "absolute", top: "-20%", right: "-5%", width: "60vw", height: "60vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(0,255,178,.09) 0%,rgba(0,255,178,.03) 40%,transparent 70%)" }} />
+        <div style={{ position: "absolute", bottom: "-15%", left: "-8%", width: "50vw", height: "50vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(79,156,249,.07) 0%,rgba(79,156,249,.02) 40%,transparent 70%)" }} />
+        <div style={{ position: "absolute", top: "40%", left: "30%", width: "30vw", height: "30vw", borderRadius: "50%", background: "radial-gradient(circle,rgba(167,139,250,.05) 0%,transparent 70%)" }} />
+        <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(0,255,178,.012) 40px,rgba(0,255,178,.012) 41px),repeating-linear-gradient(90deg,transparent,transparent 40px,rgba(0,255,178,.012) 40px,rgba(0,255,178,.012) 41px)" }} />
       </div>
 
       {/* ── NOTIFICATIONS PANEL ── */}
@@ -1190,8 +1223,9 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
       {/* Toast */}
       {toast && (
-        <div style={{ position: "fixed", top: "20px", right: "20px", zIndex: 9999, padding: "10px 16px", background: "rgba(2,8,5,.98)", border: "1px solid rgba(0,255,178,.35)", borderRadius: "10px", color: "#00FFB2", fontSize: "12px", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "toast .3s ease", letterSpacing: ".04em", boxShadow: "0 4px 20px rgba(0,255,178,.12)" }}>
-          ✓ {toast}
+        <div style={{ position: "fixed", top: "20px", right: "20px", zIndex: 9999, padding: "12px 18px", background: "rgba(2,8,5,.98)", border: "1px solid rgba(0,255,178,.3)", borderRadius: "12px", color: "#00FFB2", fontSize: "12px", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", animation: "toast .3s cubic-bezier(.16,1,.3,1)", letterSpacing: ".03em", boxShadow: "0 8px 32px rgba(0,0,0,.5), 0 0 0 1px rgba(0,255,178,.08)", display: "flex", alignItems: "center", gap: "8px", maxWidth: "320px" }}>
+          <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#00FFB2", boxShadow: "0 0 8px #00FFB2", flexShrink: 0 }} />
+          {toast}
         </div>
       )}
 
@@ -1246,7 +1280,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
       <div style={{ display: "flex", minHeight: "100vh", position: "relative", zIndex: 1 }}>
 
         {/* Desktop sidebar */}
-        <aside className="desktop-sidebar" style={{ width: "200px", minWidth: "200px", minHeight: "100vh", background: "rgba(255,255,255,.012)", borderRight: "1px solid rgba(255,255,255,.045)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", flexDirection: "column", padding: "28px 16px", position: "sticky", top: 0, height: "100vh", overflow: "auto" }}>
+        <aside className="desktop-sidebar" style={{ width: "220px", minWidth: "220px", minHeight: "100vh", background: "linear-gradient(180deg,rgba(255,255,255,.025) 0%,rgba(255,255,255,.015) 100%)", borderRight: "1px solid rgba(255,255,255,.06)", backdropFilter: "blur(32px)", WebkitBackdropFilter: "blur(32px)", flexDirection: "column", padding: "28px 18px", position: "sticky", top: 0, height: "100vh", overflow: "auto", boxShadow: "inset -1px 0 0 rgba(0,255,178,.03)" }}>
           <SidebarContent />
         </aside>
 
@@ -1261,7 +1295,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
               <span style={{ color: "#fff", fontWeight: "700", fontSize: "13px", fontFamily: "'Syne',sans-serif" }}>AgentFlow</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <button onClick={() => setDarkMode(d => !d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "2px" }}>{darkMode ? "☀️" : "🌙"}</button>
+              <button onClick={() => setDarkMode(d => { const n = !d; localStorage.setItem('af_dark', String(n)); return n; })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "2px" }}>{darkMode ? "☀️" : "🌙"}</button>
               <div style={{ position: "relative" }}>
                 <button onClick={() => setShowNotifs(s => !s)} className={unreadNotifs > 0 ? "bell-animate" : ""} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "2px" }}>🔔</button>
                 {unreadNotifs > 0 && <div style={{ position: "absolute", top: "-2px", right: "-2px", width: "14px", height: "14px", borderRadius: "50%", background: "#FF6B6B", fontSize: "8px", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700" }}>{unreadNotifs}</div>}
@@ -2010,12 +2044,19 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
           </main>
 
-          {/* Mobile bottom nav */}
-          <nav className="mobile-bottom-nav" style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, background: "rgba(4,5,10,.97)", borderTop: "1px solid rgba(255,255,255,.07)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", padding: "8px 0 env(safe-area-inset-bottom, 12px)", justifyContent: "space-around", alignItems: "center" }}>
-            {[...TABS, ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "⬡" }] : [])].map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", padding: "5px 10px", background: "none", border: "none", cursor: "pointer", color: tab === t.id ? "#00FFB2" : "#555", fontFamily: "inherit", transition: "all .15s", minWidth: "50px" }}>
+          {/* Mobile bottom nav — only 5 key tabs */}
+          <nav className="mobile-bottom-nav" style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, background: "rgba(4,5,10,.97)", borderTop: "1px solid rgba(255,255,255,.06)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", padding: "8px 0 env(safe-area-inset-bottom, 10px)", justifyContent: "space-around", alignItems: "center" }}>
+            {[
+              { id: "dashboard", label: "Home", icon: "◈" },
+              { id: "agents", label: "Agents", icon: "◉" },
+              { id: "appointments", label: "Bookings", icon: "📅" },
+              { id: "invoices", label: "Invoices", icon: "🧾" },
+              { id: "command", label: "Aria", icon: "◎" },
+            ].map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", padding: "5px 10px", background: "none", border: "none", cursor: "pointer", color: tab === t.id ? "#00FFB2" : "#444", fontFamily: "inherit", transition: "all .15s", minWidth: "52px", position: "relative" }}>
                 <span style={{ fontSize: "17px" }}>{t.icon}</span>
-                <span style={{ fontSize: "8px", letterSpacing: ".06em" }}>{t.label}</span>
+                <span style={{ fontSize: "8px", letterSpacing: ".04em", fontWeight: tab === t.id ? "600" : "400" }}>{t.label}</span>
+                {tab === t.id && <div style={{ position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)", width: "20px", height: "2px", borderRadius: "2px", background: "#00FFB2", boxShadow: "0 0 6px #00FFB2" }} />}
               </button>
             ))}
           </nav>
