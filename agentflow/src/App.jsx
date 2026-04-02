@@ -130,10 +130,16 @@ function AuthForm({ supabase }) {
     if (mode === "signin") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) setError(error.message);
-    } else {
+    } else if (mode === "signup") {
       const { error } = await supabase.auth.signUp({ email, password });
       if (error) setError(error.message);
       else setMessage("Check your email to confirm your account!");
+    } else if (mode === "reset") {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/app`,
+      });
+      if (error) setError(error.message);
+      else setMessage("Password reset link sent! Check your email.");
     }
     setAuthLoading(false);
   };
@@ -143,17 +149,31 @@ function AuthForm({ supabase }) {
 
   return (
     <div style={{ width: "100%", maxWidth: "360px", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "18px", padding: "28px" }}>
-      <div style={{ fontSize: "9px", color: "#777", letterSpacing: ".2em", marginBottom: "20px", textAlign: "center" }}>{mode === "signin" ? "SIGN IN TO YOUR WORKSPACE" : "CREATE YOUR ACCOUNT"}</div>
+      <div style={{ fontSize: "9px", color: "#777", letterSpacing: ".2em", marginBottom: "20px", textAlign: "center" }}>
+        {mode === "signin" ? "SIGN IN TO YOUR WORKSPACE" : mode === "signup" ? "CREATE YOUR ACCOUNT" : "RESET YOUR PASSWORD"}
+      </div>
       <input style={inputStyle} type="email" placeholder="your@email.com" value={email} onChange={e => setEmail(e.target.value)} onFocus={e => e.target.style.borderColor="rgba(0,255,178,.35)"} onBlur={e => e.target.style.borderColor="rgba(255,255,255,.1)"} />
-      <input style={inputStyle} type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onFocus={e => e.target.style.borderColor="rgba(0,255,178,.35)"} onBlur={e => e.target.style.borderColor="rgba(255,255,255,.1)"} onKeyDown={e => e.key === "Enter" && handle()} />
+      {mode !== "reset" && (
+        <input style={inputStyle} type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onFocus={e => e.target.style.borderColor="rgba(0,255,178,.35)"} onBlur={e => e.target.style.borderColor="rgba(255,255,255,.1)"} onKeyDown={e => e.key === "Enter" && handle()} />
+      )}
       {error && <div style={{ color: "#FF6B6B", fontSize: "11px", marginBottom: "10px", padding: "8px 12px", background: "rgba(255,107,107,.06)", borderRadius: "7px", border: "1px solid rgba(255,107,107,.15)" }}>{error}</div>}
       {message && <div style={{ color: "#00FFB2", fontSize: "11px", marginBottom: "10px", padding: "8px 12px", background: "rgba(0,255,178,.06)", borderRadius: "7px", border: "1px solid rgba(0,255,178,.15)" }}>{message}</div>}
-      <button style={btnStyle} onClick={handle} disabled={authLoading}>{authLoading ? "Please wait..." : mode === "signin" ? "Sign In →" : "Create Account →"}</button>
-      <div style={{ textAlign: "center", marginTop: "16px", fontSize: "11px", color: "#666" }}>
-        {mode === "signin" ? "No account? " : "Have an account? "}
-        <span style={{ color: "#00FFB2", cursor: "pointer" }} onClick={() => { setMode(m => m === "signin" ? "signup" : "signin"); setError(""); setMessage(""); }}>
-          {mode === "signin" ? "Sign up" : "Sign in"}
-        </span>
+      <button style={btnStyle} onClick={handle} disabled={authLoading}>
+        {authLoading ? "Please wait..." : mode === "signin" ? "Sign In →" : mode === "signup" ? "Create Account →" : "Send Reset Link →"}
+      </button>
+      <div style={{ textAlign: "center", marginTop: "14px", fontSize: "11px", color: "#666", display: "flex", flexDirection: "column", gap: "6px" }}>
+        {mode === "signin" && (
+          <>
+            <span>No account? <span style={{ color: "#00FFB2", cursor: "pointer" }} onClick={() => { setMode("signup"); setError(""); setMessage(""); }}>Sign up</span></span>
+            <span style={{ color: "#555", cursor: "pointer" }} onClick={() => { setMode("reset"); setError(""); setMessage(""); }}>Forgot password?</span>
+          </>
+        )}
+        {mode === "signup" && (
+          <span>Have an account? <span style={{ color: "#00FFB2", cursor: "pointer" }} onClick={() => { setMode("signin"); setError(""); setMessage(""); }}>Sign in</span></span>
+        )}
+        {mode === "reset" && (
+          <span style={{ color: "#00FFB2", cursor: "pointer" }} onClick={() => { setMode("signin"); setError(""); setMessage(""); }}>← Back to sign in</span>
+        )}
       </div>
     </div>
   );
@@ -431,7 +451,7 @@ export default function AgentFlow() {
       // Merge subscription data
       const users = Object.values(byUser).map(u => {
         const sub = (allSubs || []).find(s => s.user_id === u.user_id);
-        return { ...u, plan: sub?.plan || "free", email: u.user_id };
+        return { ...u, plan: sub?.plan || "free" };
       });
 
       setAdminUsers(users);
@@ -1316,7 +1336,35 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                   <span style={{ color: "#666", fontSize: "10px", marginLeft: "auto" }}>{metrics.active} active · {metrics.rate}% success</span>
                 </div>
 
-                {/* Metric cards */}
+                {/* ── ONBOARDING — show only when no agents deployed ── */}
+                {agents.length === 0 && (
+                  <Glass style={{ padding: "32px", marginBottom: "20px", border: "1px solid rgba(0,255,178,.15)", background: "linear-gradient(135deg,rgba(0,255,178,.04),rgba(0,255,178,.01))", animation: "fadeUp .5s ease" }}>
+                    <div style={{ textAlign: "center", marginBottom: "28px" }}>
+                      <div style={{ fontSize: "40px", marginBottom: "12px" }}>🚀</div>
+                      <div style={{ color: "#fff", fontFamily: "'Syne',sans-serif", fontWeight: "800", fontSize: "18px", marginBottom: "8px" }}>Welcome to AgentFlow!</div>
+                      <div style={{ color: "#888", fontSize: "12px", lineHeight: "1.6", maxWidth: "400px", margin: "0 auto" }}>Your AI-powered business automation platform. Follow these steps to get started in under 5 minutes.</div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: "12px" }}>
+                      {[
+                        { step: "1", icon: "◉", title: "Deploy your agents", desc: "Go to Agents tab and deploy Aria, Rex, Finn or Nova", tab: "agents", color: "#00FFB2" },
+                        { step: "2", icon: "📱", title: "Connect WhatsApp", desc: "Go to Connect tab and add your WhatsApp business number", tab: "integrations", color: "#FFD600" },
+                        { step: "3", icon: "📅", title: "Add a booking", desc: "Go to Bookings tab and add your first appointment", tab: "appointments", color: "#60A5FA" },
+                        { step: "4", icon: "◎", title: "Chat with Aria", desc: "Go to Command tab and ask Aria anything about your business", tab: "command", color: "#A78BFA" },
+                      ].map((s, i) => (
+                        <div key={i} onClick={() => setTab(s.tab)} style={{ padding: "16px", background: "rgba(255,255,255,.03)", border: `1px solid ${s.color}20`, borderRadius: "14px", cursor: "pointer", transition: "all .2s", animation: `fadeUp .4s ease ${i * 80}ms both` }}
+                          onMouseEnter={e => { e.currentTarget.style.background = `${s.color}08`; e.currentTarget.style.borderColor = `${s.color}35`; e.currentTarget.style.transform = "translateY(-2px)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,.03)"; e.currentTarget.style.borderColor = `${s.color}20`; e.currentTarget.style.transform = "translateY(0)"; }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                            <div style={{ width: "28px", height: "28px", borderRadius: "8px", background: `${s.color}15`, border: `1px solid ${s.color}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px" }}>{s.icon}</div>
+                            <div style={{ fontSize: "8px", color: s.color, letterSpacing: ".15em", fontWeight: "700" }}>STEP {s.step}</div>
+                          </div>
+                          <div style={{ color: "#fff", fontSize: "12px", fontWeight: "600", marginBottom: "4px" }}>{s.title}</div>
+                          <div style={{ color: "#666", fontSize: "10px", lineHeight: "1.5" }}>{s.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </Glass>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "10px", marginBottom: "16px" }}>
                   {[
                     { l: "TASKS DONE", v: metrics.tasks.toLocaleString(), s: "this month", c: "#00FFB2" },
@@ -1334,7 +1382,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                   ))}
                 </div>
 
-                {/* Agent quick cards */}
+                {/* Metric cards */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: "10px" }}>
                   {agents.map((a, i) => (
                     <Glass key={a.id} hover onClick={() => { setSelAgent(a); setTab("agents"); }} style={{ padding: "18px", cursor: "pointer", animation: `fadeUp .4s ease ${i * 75}ms both` }}>
@@ -1755,16 +1803,23 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
 
             {/* ── GMAIL INBOX ── */}
-            {tab === "integrations" && gmailConnected && gmailEmails.length > 0 && (
+            {tab === "integrations" && gmailConnected && (
               <div style={{ marginTop: "20px", animation: "fadeUp .4s ease" }}>
                 <div style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
                   <span style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em" }}>GMAIL</span>
                   <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
                   <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Recent Emails</span>
-                  <button onClick={loadGmailEmails} style={{ marginLeft: "auto", padding: "4px 10px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>↻ Refresh</button>
+                  <button onClick={loadGmailEmails} disabled={gmailLoading} style={{ marginLeft: "auto", padding: "5px 12px", background: "rgba(0,255,178,.06)", border: "1px solid rgba(0,255,178,.15)", borderRadius: "6px", color: "#00FFB2", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", opacity: gmailLoading ? .5 : 1 }}>
+                    {gmailLoading ? "Loading..." : "↻ Load Emails"}
+                  </button>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {gmailEmails.map((email, i) => (
+                {gmailEmails.length === 0 ? (
+                  <Glass style={{ padding: "24px", textAlign: "center" }}>
+                    <div style={{ color: "#666", fontSize: "12px" }}>Click "Load Emails" to fetch your recent Gmail inbox.</div>
+                  </Glass>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {gmailEmails.map((email, i) => (
                     <Glass key={i} style={{ padding: "14px 16px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px", gap: "10px" }}>
                         <span style={{ color: "#fff", fontSize: "12px", fontWeight: "600", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email.subject || "(no subject)"}</span>
@@ -1792,10 +1847,9 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                     </Glass>
                   ))}
                 </div>
+                )}
               </div>
             )}
-
-            {/* ── APPOINTMENTS ── */}
             {tab === "appointments" && (
               <div style={{ animation: "fadeUp .4s ease" }}>
                 <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
@@ -2000,7 +2054,7 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                           <div style={{ flex: 1, minWidth: "160px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
                               <div style={{ width: "24px", height: "24px", borderRadius: "6px", background: "rgba(0,255,178,.08)", border: "1px solid rgba(0,255,178,.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px" }}>👤</div>
-                              <span style={{ color: "#ccc", fontSize: "11px", fontFamily: "monospace" }}>{u.user_id.slice(0, 8)}...{u.user_id.slice(-4)}</span>
+                              <span style={{ color: "#ccc", fontSize: "11px", fontFamily: "monospace" }}>{u.user_id.slice(0, 12)}...</span>
                               {u.user_id === ADMIN_UID && <span style={{ background: "#FFD600", color: "#04050A", fontSize: "7px", padding: "1px 6px", borderRadius: "10px", fontWeight: "700" }}>YOU</span>}
                             </div>
                             <div style={{ display: "flex", gap: "12px", marginLeft: "32px" }}>
