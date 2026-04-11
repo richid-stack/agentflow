@@ -1,5 +1,19 @@
 {
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron-rex",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron-finn",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron-nova",
+      "schedule": "0 * * * *"
+    }
   ]
 }
