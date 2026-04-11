@@ -23,6 +23,8 @@ const AGENTS = [
 const INTEGRATIONS = [
   { name: "WhatsApp", icon: "📱", connected: true, desc: "Send/receive messages" },
   { name: "Gmail", icon: "📧", connected: true, desc: "Email automation" },
+  { name: "Facebook", icon: "📘", connected: false, desc: "Messenger automation", isMeta: true },
+  { name: "Instagram", icon: "📸", connected: false, desc: "Instagram DM automation", isMeta: true },
   { name: "Stripe", icon: "💳", connected: false, desc: "Payments & invoicing" },
   { name: "QuickBooks", icon: "📊", connected: true, desc: "Accounting sync" },
   { name: "Calendar", icon: "🗓️", connected: true, desc: "Scheduling" },
@@ -38,6 +40,7 @@ const TABS = [
   { id: "agents", label: "Agents", icon: "◉" },
   { id: "appointments", label: "Bookings", icon: "📅" },
   { id: "invoices", label: "Invoices", icon: "🧾" },
+  { id: "messages", label: "Messages", icon: "💬" },
   { id: "command", label: "Command", icon: "◎" },
   { id: "integrations", label: "Connect", icon: "◇" },
   { id: "billing", label: "Billing", icon: "◆" },
@@ -227,6 +230,13 @@ export default function AgentFlow() {
   const [transcript, setTranscript] = useState("");
   const [voiceMode, setVoiceMode] = useState(false); // full voice mode overlay
   const [audioLevel, setAudioLevel] = useState(0);
+  const [metaMessages, setMetaMessages] = useState([]);
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [showMetaSetup, setShowMetaSetup] = useState(false);
+  const [metaForm, setMetaForm] = useState({ pageId: "", instagramId: "", accessToken: "", businessName: "" });
+  const [metaFormLoading, setMetaFormLoading] = useState(false);
+  const [metaBusiness, setMetaBusiness] = useState(null);
+  const [metaMsgFilter, setMetaMsgFilter] = useState("all"); // all | facebook | instagram
   const recognitionRef = useRef(null);
   const synthRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -258,7 +268,7 @@ export default function AgentFlow() {
 
   const loadAll = async () => {
     setDbLoading(true);
-    await Promise.all([loadAgents(), loadIntegrations(), loadSubscription(), loadAppointments(), loadInvoices()]);
+    await Promise.all([loadAgents(), loadIntegrations(), loadSubscription(), loadAppointments(), loadInvoices(), loadMetaData()]);
     setDbLoading(false);
   };
 
@@ -371,6 +381,73 @@ export default function AgentFlow() {
       .order("created_at", { ascending: false });
     if (error) { console.error("invoices:", error); return; }
     setInvoices(data || []);
+  };
+
+  // ── Meta: load business info and message history ──
+  const loadMetaData = async () => {
+    if (!user) return;
+    setMetaLoading(true);
+    try {
+      const { data: biz } = await supabase
+        .from("businesses")
+        .select("*")
+        .eq("owner_id", user.id)
+        .single();
+      setMetaBusiness(biz || null);
+
+      if (biz?.id) {
+        const { data: msgs } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("business_id", biz.id)
+          .order("created_at", { ascending: false })
+          .limit(50);
+        setMetaMessages(msgs || []);
+
+        // Sync Facebook/Instagram connected status with integrations UI
+        if (biz.page_id && biz.meta_status === "live") {
+          setIntegrations(p => p.map(x =>
+            x.name === "Facebook" ? { ...x, connected: true } :
+            (x.name === "Instagram" && biz.instagram_id) ? { ...x, connected: true } : x
+          ));
+        }
+      }
+    } catch (e) {
+      console.error("loadMetaData:", e);
+    }
+    setMetaLoading(false);
+  };
+
+  // ── Meta: connect a Facebook Page manually ──
+  const connectMeta = async () => {
+    if (!metaForm.pageId || !metaForm.accessToken) {
+      notify("Page ID and Access Token are required.");
+      return;
+    }
+    setMetaFormLoading(true);
+    try {
+      const res = await fetch("/api/meta-onboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          adminSecret: import.meta.env.VITE_ADMIN_SECRET,
+          userId: user.id,
+          businessName: metaForm.businessName || "My Business",
+          pageId: metaForm.pageId,
+          instagramId: metaForm.instagramId || undefined,
+          accessToken: metaForm.accessToken,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Connection failed");
+      setShowMetaSetup(false);
+      setMetaForm({ pageId: "", instagramId: "", accessToken: "", businessName: "" });
+      notify("Facebook Page connected! ✓");
+      await loadMetaData();
+    } catch (e) {
+      notify("Error: " + e.message);
+    }
+    setMetaFormLoading(false);
   };
 
   const saveAppointment = async () => {
@@ -903,6 +980,7 @@ Current platform state:
 - Plan: ${plan.name}
 - Upcoming appointments: ${appointments.filter(a=>a.status==="confirmed").length} confirmed
 - Pending invoices: ${invoices.filter(i=>i.status==="pending").length} pending, GHS ${invoices.filter(i=>i.status!=="paid").reduce((s,i)=>s+Number(i.amount),0).toLocaleString()} outstanding
+- Meta messages: ${metaMessages.length} total (${metaMessages.filter(m=>m.platform==="facebook").length} Facebook, ${metaMessages.filter(m=>m.platform==="instagram").length} Instagram, ${metaMessages.filter(m=>m.escalated).length} escalated)
 Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragraphs.`;
     try {
       const history = chatLog.filter(m => m.from === "user" || m.from === "aria").map(m => ({ role: m.from === "user" ? "user" : "model", parts: [{ text: m.text }] }));
@@ -952,7 +1030,12 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
           >
             <span style={{ fontSize: "14px", opacity: tab === t.id ? 1 : 0.6 }}>{t.icon}</span>
             <span style={{ fontWeight: tab === t.id ? "600" : "400" }}>{t.label}</span>
-            {t.id === "invoices" && invoices.filter(i => i.status === "pending").length > 0 && (
+            {t.id === "messages" && metaMessages.length > 0 && (
+                <span style={{ marginLeft: "auto", fontSize: "8px", padding: "2px 6px", borderRadius: "10px", background: "rgba(0,255,178,.1)", color: "#00FFB2", border: "1px solid rgba(0,255,178,.2)", fontWeight: "700" }}>
+                  {metaMessages.length}
+                </span>
+              )}
+              {t.id === "invoices" && invoices.filter(i => i.status === "pending").length > 0 && (
               <span style={{ marginLeft: "auto", fontSize: "8px", padding: "2px 6px", borderRadius: "10px", background: "rgba(255,107,107,.15)", color: "#FF6B6B", border: "1px solid rgba(255,107,107,.2)", fontWeight: "700" }}>
                 {invoices.filter(i => i.status === "pending").length}
               </span>
@@ -1708,8 +1791,23 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                       <div style={{ color: "#fff", fontWeight: "700", fontFamily: "'Syne',sans-serif", fontSize: "13px", marginBottom: "3px" }}>{intg.name}</div>
                       <div style={{ fontSize: "10px", color: "#888", marginBottom: "13px" }}>{intg.desc}</div>
                       <button
-                        onClick={async () => {
+                      onClick={async () => {
                           const newVal = !intg.connected;
+                          // Gmail — launch OAuth flow
+                          if (intg.name === "Gmail" && newVal) {
+                            connectGmail();
+                            return;
+                          }
+                          // WhatsApp — show number setup modal
+                          if (intg.name === "WhatsApp" && newVal) {
+                            setShowWaSetup(true);
+                            return;
+                          }
+                          // Facebook / Instagram — show Meta setup modal
+                          if (intg.isMeta && newVal) {
+                            setShowMetaSetup(true);
+                            return;
+                          }
                           setIntegrations(p => p.map(x => x.name === intg.name ? { ...x, connected: newVal } : x));
                           if (user) {
                             await supabase.from("integrations").upsert({
@@ -1736,6 +1834,183 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                     </Glass>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* ── META SETUP MODAL ── */}
+            {showMetaSetup && (
+              <div style={{ position: "fixed", inset: 0, zIndex: 1300, background: "rgba(0,0,0,.88)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }} onClick={() => setShowMetaSetup(false)}>
+                <div style={{ width: "100%", maxWidth: "440px", background: "rgba(4,6,12,.99)", border: "1px solid rgba(0,255,178,.18)", borderRadius: "20px", padding: "28px", animation: "fadeUp .3s ease", boxShadow: "0 20px 60px rgba(0,0,0,.6)" }} onClick={e => e.stopPropagation()}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "18px" }}>
+                    <div>
+                      <div style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em", marginBottom: "4px" }}>META INTEGRATION</div>
+                      <div style={{ color: "#fff", fontFamily: "'Syne',sans-serif", fontSize: "17px", fontWeight: "700" }}>Connect Facebook Page</div>
+                    </div>
+                    <button onClick={() => setShowMetaSetup(false)} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "22px", lineHeight: 1 }}>×</button>
+                  </div>
+
+                  <div style={{ fontSize: "11px", color: "#888", lineHeight: "1.65", marginBottom: "18px", padding: "10px 13px", background: "rgba(255,255,255,.02)", border: "1px solid rgba(255,255,255,.06)", borderRadius: "9px" }}>
+                    📘 Get your Page ID and Access Token from{" "}
+                    <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noreferrer" style={{ color: "#00FFB2" }}>Meta Graph API Explorer</a>.
+                    Generate a Page token then exchange it for a long-lived token.
+                  </div>
+
+                  {[
+                    { key: "businessName", label: "BUSINESS NAME", placeholder: "e.g. Mensah & Sons", type: "text" },
+                    { key: "pageId", label: "FACEBOOK PAGE ID *", placeholder: "e.g. 123456789012345", type: "text" },
+                    { key: "instagramId", label: "INSTAGRAM ACCOUNT ID (OPTIONAL)", placeholder: "e.g. 987654321", type: "text" },
+                    { key: "accessToken", label: "PAGE ACCESS TOKEN *", placeholder: "EAAxxxxxxxxxxxxxxxx...", type: "password" },
+                  ].map(f => (
+                    <div key={f.key} style={{ marginBottom: "13px" }}>
+                      <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".18em", marginBottom: "5px" }}>{f.label}</div>
+                      <input
+                        type={f.type}
+                        value={metaForm[f.key]}
+                        onChange={e => setMetaForm(p => ({ ...p, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder}
+                        style={{ width: "100%", padding: "11px 13px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)", borderRadius: "9px", color: "#fff", fontSize: "13px", fontFamily: "inherit" }}
+                      />
+                    </div>
+                  ))}
+
+                  <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+                    <button
+                      onClick={connectMeta}
+                      disabled={metaFormLoading}
+                      style={{ flex: 1, padding: "12px", background: metaFormLoading ? "rgba(0,255,178,.2)" : "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "10px", color: "#04050A", fontWeight: "700", fontSize: "13px", fontFamily: "inherit", cursor: metaFormLoading ? "not-allowed" : "pointer", transition: "all .2s" }}
+                    >{metaFormLoading ? "Verifying..." : "Connect Page →"}</button>
+                    <button onClick={() => setShowMetaSetup(false)} style={{ padding: "12px 16px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "10px", color: "#888", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── MESSAGES (META INBOX) ── */}
+            {tab === "messages" && (
+              <div style={{ animation: "fadeUp .4s ease" }}>
+                <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".22em" }}>INBOX</span>
+                  <span style={{ color: "rgba(255,255,255,.08)" }}>·</span>
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#fff", fontFamily: "'Syne',sans-serif" }}>Meta Messages</span>
+                  {metaBusiness?.page_id && (
+                    <span style={{ padding: "3px 10px", borderRadius: "20px", fontSize: "9px", letterSpacing: ".08em", background: metaBusiness.meta_status === "live" ? "rgba(0,255,178,.08)" : "rgba(255,107,107,.08)", border: `1px solid ${metaBusiness.meta_status === "live" ? "rgba(0,255,178,.2)" : "rgba(255,107,107,.2)"}`, color: metaBusiness.meta_status === "live" ? "#00FFB2" : "#FF6B6B" }}>
+                      ● {metaBusiness.meta_status === "live" ? "LIVE" : "IDLE"} — {metaBusiness.name}
+                    </span>
+                  )}
+                  <button onClick={loadMetaData} disabled={metaLoading} style={{ marginLeft: "auto", padding: "5px 12px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "7px", color: "#888", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", letterSpacing: ".08em", opacity: metaLoading ? .5 : 1 }}>
+                    {metaLoading ? "Loading..." : "↻ REFRESH"}
+                  </button>
+                </div>
+
+                {/* Not connected yet */}
+                {!metaBusiness?.page_id ? (
+                  <Glass style={{ padding: "40px 28px", textAlign: "center" }}>
+                    <div style={{ fontSize: "40px", marginBottom: "14px" }}>📘</div>
+                    <div style={{ color: "#fff", fontWeight: "700", fontFamily: "'Syne',sans-serif", fontSize: "16px", marginBottom: "8px" }}>No Facebook Page Connected</div>
+                    <div style={{ color: "#666", fontSize: "12px", lineHeight: "1.6", marginBottom: "22px", maxWidth: "340px", margin: "0 auto 22px" }}>
+                      Connect your Facebook Page to automatically receive and reply to Messenger and Instagram DMs using your AI agents.
+                    </div>
+                    <button
+                      onClick={() => setShowMetaSetup(true)}
+                      style={{ padding: "11px 24px", background: "linear-gradient(135deg,#00FFB2,#00C88A)", border: "none", borderRadius: "10px", color: "#04050A", fontWeight: "700", fontSize: "13px", fontFamily: "inherit", cursor: "pointer", boxShadow: "0 4px 18px rgba(0,255,178,.22)" }}
+                    >Connect Facebook Page →</button>
+                  </Glass>
+                ) : (
+                  <>
+                    {/* Stats row */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: "8px", marginBottom: "16px" }}>
+                      {[
+                        { label: "TOTAL", value: metaMessages.length, color: "#00FFB2" },
+                        { label: "FACEBOOK", value: metaMessages.filter(m => m.platform === "facebook").length, color: "#4267B2" },
+                        { label: "INSTAGRAM", value: metaMessages.filter(m => m.platform === "instagram").length, color: "#C13584" },
+                        { label: "ESCALATED", value: metaMessages.filter(m => m.escalated).length, color: "#FF6B6B" },
+                      ].map((s, i) => (
+                        <Glass key={i} style={{ padding: "14px", position: "relative", overflow: "hidden" }}>
+                          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "2px", background: `linear-gradient(90deg,transparent,${s.color},transparent)` }} />
+                          <div style={{ fontSize: "8px", color: "#777", letterSpacing: ".16em", marginBottom: "6px" }}>{s.label}</div>
+                          <div style={{ fontSize: "24px", fontWeight: "800", color: s.color, fontFamily: "'Syne',sans-serif" }}>{s.value}</div>
+                        </Glass>
+                      ))}
+                    </div>
+
+                    {/* Filter buttons */}
+                    <div style={{ display: "flex", gap: "6px", marginBottom: "12px" }}>
+                      {["all", "facebook", "instagram"].map(f => (
+                        <button key={f} onClick={() => setMetaMsgFilter(f)}
+                          style={{ padding: "5px 13px", background: metaMsgFilter === f ? "rgba(0,255,178,.1)" : "rgba(255,255,255,.03)", border: `1px solid ${metaMsgFilter === f ? "rgba(0,255,178,.25)" : "rgba(255,255,255,.07)"}`, borderRadius: "20px", color: metaMsgFilter === f ? "#00FFB2" : "#666", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", letterSpacing: ".06em", transition: "all .15s" }}>
+                          {f === "all" ? "All" : f === "facebook" ? "📘 Facebook" : "📸 Instagram"}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Messages list */}
+                    {metaLoading ? (
+                      <Glass style={{ padding: "28px", textAlign: "center" }}>
+                        <div style={{ color: "#666", fontSize: "12px" }}>Loading messages...</div>
+                      </Glass>
+                    ) : metaMessages.filter(m => metaMsgFilter === "all" || m.platform === metaMsgFilter).length === 0 ? (
+                      <Glass style={{ padding: "28px", textAlign: "center" }}>
+                        <div style={{ color: "#666", fontSize: "12px" }}>No messages yet. Send a test message to your Facebook Page.</div>
+                      </Glass>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                        {metaMessages
+                          .filter(m => metaMsgFilter === "all" || m.platform === metaMsgFilter)
+                          .map((msg, i) => (
+                          <Glass key={msg.id || i} style={{ padding: "14px 16px", animation: `fadeUp .3s ease ${i * 30}ms both` }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px", gap: "10px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <span style={{ fontSize: "14px" }}>{msg.platform === "instagram" ? "📸" : "📘"}</span>
+                                <div>
+                                  <div style={{ color: "#bbb", fontSize: "11px", fontWeight: "600" }}>{msg.sender_name || msg.sender_id?.slice(0, 12) + "..."}</div>
+                                  <div style={{ color: "#555", fontSize: "9px", letterSpacing: ".06em" }}>{msg.platform?.toUpperCase()}</div>
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                                {msg.agent_name && (
+                                  <span style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "12px", background: "rgba(0,255,178,.07)", border: "1px solid rgba(0,255,178,.15)", color: "#00FFB2" }}>
+                                    {msg.agent_name}
+                                  </span>
+                                )}
+                                {msg.escalated && (
+                                  <span style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "12px", background: "rgba(255,107,107,.07)", border: "1px solid rgba(255,107,107,.15)", color: "#FF6B6B" }}>ESCALATED</span>
+                                )}
+                                <span style={{ color: "#555", fontSize: "9px" }}>{new Date(msg.created_at).toLocaleString("en-GH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                              </div>
+                            </div>
+                            <div style={{ background: "rgba(255,255,255,.02)", borderRadius: "8px", padding: "10px 12px", marginBottom: "8px" }}>
+                              <div style={{ fontSize: "9px", color: "#555", letterSpacing: ".1em", marginBottom: "4px" }}>CUSTOMER</div>
+                              <div style={{ fontSize: "12px", color: "#ddd", lineHeight: "1.55" }}>{msg.message_text}</div>
+                            </div>
+                            {msg.response_text && (
+                              <div style={{ background: "rgba(0,255,178,.04)", border: "1px solid rgba(0,255,178,.1)", borderRadius: "8px", padding: "10px 12px" }}>
+                                <div style={{ fontSize: "9px", color: "#00FFB2", letterSpacing: ".1em", marginBottom: "4px" }}>AGENT REPLY</div>
+                                <div style={{ fontSize: "12px", color: "#BDFFD9", lineHeight: "1.55" }}>{msg.response_text}</div>
+                              </div>
+                            )}
+                            {!msg.response_text && (
+                              <div style={{ fontSize: "10px", color: "#FF6B6B", padding: "6px 10px", background: "rgba(255,107,107,.05)", border: "1px solid rgba(255,107,107,.12)", borderRadius: "6px" }}>
+                                ⚠️ Reply failed — check your Page access token
+                              </div>
+                            )}
+                          </Glass>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Connection info footer */}
+                    <Glass style={{ padding: "14px 16px", marginTop: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                      <div style={{ fontSize: "11px", color: "#666" }}>
+                        Page ID: <span style={{ color: "#bbb", fontFamily: "monospace" }}>{metaBusiness.page_id}</span>
+                        {metaBusiness.instagram_id && <span style={{ marginLeft: "12px" }}>IG: <span style={{ color: "#bbb", fontFamily: "monospace" }}>{metaBusiness.instagram_id}</span></span>}
+                      </div>
+                      <button
+                        onClick={() => setShowMetaSetup(true)}
+                        style={{ padding: "5px 12px", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: "7px", color: "#888", cursor: "pointer", fontSize: "9px", fontFamily: "inherit", letterSpacing: ".08em" }}
+                      >⚙ UPDATE TOKEN</button>
+                    </Glass>
+                  </>
+                )}
               </div>
             )}
 
@@ -2098,12 +2373,12 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
 
           </main>
 
-          {/* Mobile bottom nav — only 5 key tabs */}
+          {/* Mobile bottom nav — 5 key tabs */}
           <nav className="mobile-bottom-nav" style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, background: "rgba(4,5,10,.97)", borderTop: "1px solid rgba(255,255,255,.06)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", padding: "8px 0 env(safe-area-inset-bottom, 10px)", justifyContent: "space-around", alignItems: "center" }}>
             {[
               { id: "dashboard", label: "Home", icon: "◈" },
               { id: "agents", label: "Agents", icon: "◉" },
-              { id: "appointments", label: "Bookings", icon: "📅" },
+              { id: "messages", label: "Messages", icon: "💬" },
               { id: "invoices", label: "Invoices", icon: "🧾" },
               { id: "command", label: "Aria", icon: "◎" },
             ].map(t => (
@@ -2111,6 +2386,9 @@ Be sharp, concise, data-driven. Plain text only. No markdown. Max 3 short paragr
                 <span style={{ fontSize: "17px" }}>{t.icon}</span>
                 <span style={{ fontSize: "8px", letterSpacing: ".04em", fontWeight: tab === t.id ? "600" : "400" }}>{t.label}</span>
                 {tab === t.id && <div style={{ position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)", width: "20px", height: "2px", borderRadius: "2px", background: "#00FFB2", boxShadow: "0 0 6px #00FFB2" }} />}
+                {t.id === "messages" && metaMessages.length > 0 && tab !== "messages" && (
+                  <div style={{ position: "absolute", top: "2px", right: "8px", width: "14px", height: "14px", borderRadius: "50%", background: "#00FFB2", fontSize: "7px", color: "#04050A", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", border: "2px solid #04050A" }}>{metaMessages.length > 9 ? "9+" : metaMessages.length}</div>
+                )}
               </button>
             ))}
           </nav>
